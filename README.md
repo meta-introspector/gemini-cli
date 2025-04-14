@@ -11,12 +11,15 @@ A command-line interface (CLI) tool written in Rust to interact with Google Gemi
 *   Persistent configuration for API Key and System Prompt.
 *   Configure API key via config file, environment variable, or command-line flag (for setting).
 *   Special flag (`-c`) to request Linux command help. **The CLI will propose a command and ask for your confirmation before executing it.**
+*   **MCP Integration** for function calling and tool execution.
+*   **Resource access** through MCP servers.
 
 ## Prerequisites
 
 *   **Rust Toolchain:** Install from [https://rustup.rs/](https://rustup.rs/)
 *   **Gemini API Key:** Obtain from [Google AI Studio](https://aistudio.google.com/app/apikey).
 *   **Supported Shell:** Bash or Zsh (for automatic wrapper function installation).
+*   **MCP Servers:** (Optional) For function calling and resource access.
 
 ## Installation
 
@@ -24,8 +27,8 @@ The easiest way to install is to use the provided installation script:
 
 ```bash
 # Clone the repository
-# git clone <repository_url>
-# cd gemini-cli-repo
+git clone https://github.com/frostdev-ops/gemini-cli
+cd gemini-cli
 
 # Run the installation script from project root or parent directory
 ./install.sh
@@ -144,6 +147,60 @@ GEMINI_DEBUG=1 gemini "your prompt"
 2.  Default: "You are a helpful assistant."
 
 **Note:** The `dotenv` crate is still used, so a `.env` file in the **current working directory** (where you run `gemini`) or the **project root** (during development) can set the `GEMINI_API_KEY` environment variable if it's not set globally or in the config file.
+
+## MCP Integration
+
+The Gemini CLI now supports the Mission Control Protocol (MCP) for function calling and resource access. This allows Gemini to:
+
+1. **Execute tools** through MCP servers
+2. **Access resources** provided by MCP servers
+3. **Combine capabilities** from multiple MCP servers
+
+### MCP Configuration
+
+MCP servers can be configured in the `~/.config/gemini-cli/mcp.toml` file:
+
+```toml
+[[servers]]
+name = "example-server"
+command = ["path/to/server/binary"]
+args = ["--config", "path/to/config.json"]
+env = { "SERVER_ENV_VAR" = "value" }
+```
+
+### Function Calling
+
+When Gemini detects that a tool should be used, it will:
+
+1. Propose the tool execution with arguments
+2. Ask for your confirmation before executing
+3. Execute the tool if confirmed
+4. Return the results to Gemini for further processing
+
+Example:
+```
+User: "Find all Python files in the current directory"
+Gemini: I'll help you find Python files in the current directory. I'll use the file system tool to do this.
+
+I'll execute: find_files(pattern="*.py", directory=".")
+Would you like me to execute this command? (y/n): y
+
+Found 5 Python files:
+- ./src/main.py
+- ./src/utils.py
+- ./tests/test_main.py
+- ./tests/test_utils.py
+- ./setup.py
+```
+
+### Resource Access
+
+Gemini can also access resources provided by MCP servers, such as:
+
+- File system information
+- System metrics
+- Network status
+- And more, depending on the MCP server implementation
 
 ## Usage
 

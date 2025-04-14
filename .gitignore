@@ -1,1 +1,13 @@
 /target
+MCP.md
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.DS_Store
+*.log
+.idea/
+.vscode/
+*.swp
+*.swo
