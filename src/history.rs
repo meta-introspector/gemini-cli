@@ -191,54 +191,31 @@ pub fn get_recent_commands(count: usize) -> Vec<String> {
     let mut commands = Vec::new();
     
     // Try to determine shell type
-    let shell = env::var("SHELL").unwrap_or_else(|_| String::from("unknown"));
-    
-    // Preferred: try to use the fc command which works across shells
-    if let Ok(output) = Command::new("sh")
-        .arg("-c")
-        .arg(format!("fc -ln -{}..1", count))
-        .output()
-    {
-        if output.status.success() {
-            if let Ok(history_output) = String::from_utf8(output.stdout) {
-                // Split lines, trim, filter out empty lines, and collect
-                commands = history_output
-                    .lines()
-                    .map(|line| line.trim())
-                    .filter(|line| !line.is_empty())
-                    .map(String::from)
-                    .collect();
-
-                // fc lists oldest first, so we reverse to get most recent first
-                commands.reverse();
-
-                // Remove the command that ran this tool itself if present, check different forms
-                commands.retain(|cmd|
-                    !cmd.starts_with("gemini ") &&
-                    !cmd.starts_with("./gemini ") && // If run locally
-                    !cmd.contains("fc -ln") && // Exclude the fc command itself
-                    !cmd.contains("gemini-cli-bin") // Exclude the direct binary call
-                );
-
-                // Take only the required count after filtering
-                commands.truncate(count);
-                return commands;
-            }
-        } else {
-            // Optionally log if fc failed, but proceed to file fallback
+    let shell = match env::var("SHELL") {
+        Ok(s) => s,
+        Err(_) => {
             if env::var("GEMINI_DEBUG").is_ok() {
-                log_debug("Warning: `fc` command failed, falling back to history file.");
-                if let Ok(stderr) = String::from_utf8(output.stderr) {
-                    log_error(&stderr);
-                }
+                log_debug("Could not determine shell type from SHELL env var");
             }
+            String::from("unknown")
         }
-    } else if env::var("GEMINI_DEBUG").is_ok() {
-        log_debug("Warning: Could not execute `fc` command.");
+    };
+    
+    let is_zsh = shell.contains("zsh");
+    let is_bash = shell.contains("bash");
+    
+    if env::var("GEMINI_DEBUG").is_ok() {
+        log_debug(&format!("Detected shell type: {}", shell));
     }
-
-    // Fallback: Read history file if fc failed or wasn't available
-    let history_path = if shell.contains("zsh") {
+    
+    // Read directly from history file - this provides access to the actual commands
+    // rather than just command names from fc/history
+    if env::var("GEMINI_DEBUG").is_ok() {
+        log_debug("Reading command history directly from history file");
+    }
+    
+    // Determine the history file path based on shell
+    let history_path = if is_zsh {
         env::var("HISTFILE").unwrap_or_else(|_|
             format!("{}/.zsh_history", env::var("HOME").unwrap_or_else(|_| String::from("~")))
         )
@@ -247,11 +224,13 @@ pub fn get_recent_commands(count: usize) -> Vec<String> {
             format!("{}/.bash_history", env::var("HOME").unwrap_or_else(|_| String::from("~")))
         )
     };
+    
+    if env::var("GEMINI_DEBUG").is_ok() {
+        log_debug(&format!("Trying to read history from: {}", history_path));
+    }
 
     if let Ok(file) = File::open(&history_path) {
         let reader = BufReader::new(file);
-        let is_zsh = shell.contains("zsh");
-
         let lines: Vec<String> = reader.lines().filter_map(Result::ok).collect();
 
         for line in lines.iter().rev() {
@@ -265,27 +244,40 @@ pub fn get_recent_commands(count: usize) -> Vec<String> {
 
             let cmd = if is_zsh {
                 // Zsh extended history format: ': <timestamp>:<duration>;<command>'
-                // Basic format: '<command>'
-                // We just need the command part after the ';', if it exists
                 trimmed_line.split_once(';').map_or(trimmed_line, |(_meta, command)| command).trim()
             } else {
                 // Bash history is simpler
                 trimmed_line
             };
 
-            // Exclude the gemini command itself
-            if !cmd.starts_with("gemini ") &&
-               !cmd.starts_with("./gemini ") &&
-               !cmd.contains("gemini-cli-bin")
-            {
-                commands.push(cmd.to_string());
-            }
+            commands.push(cmd.to_string());
+        }
+        
+        if env::var("GEMINI_DEBUG").is_ok() {
+            log_debug(&format!("Found {} commands from history file", commands.len()));
         }
     } else if env::var("GEMINI_DEBUG").is_ok() {
-        log_debug(&format!("Warning: Could not open history file: {} .", history_path));
+        log_debug(&format!("Could not open history file: {}", history_path));
     }
 
-    // Return collected commands (already reversed by reading file backwards)
+    // Filter out gemini commands and the command to run this tool
+    commands.retain(|cmd|
+        !cmd.starts_with("gemini ") &&
+        !cmd.starts_with("./gemini ") &&
+        !cmd.contains("fc -l") &&
+        !cmd.contains("history") &&
+        !cmd.contains("gemini-cli-bin")
+    );
+
+    // Truncate to the requested count
+    if commands.len() > count {
+        commands.truncate(count);
+    }
+
+    if env::var("GEMINI_DEBUG").is_ok() && commands.is_empty() {
+        log_debug("No recent commands found to add to system prompt");
+    }
+
     commands
 }
 
@@ -294,6 +286,9 @@ pub fn create_system_prompt_with_history(base_prompt: &str) -> String {
     let recent_commands = get_recent_commands(5);
     
     if recent_commands.is_empty() {
+        if env::var("GEMINI_DEBUG").is_ok() {
+            log_debug("No recent commands found to add to system prompt");
+        }
         return base_prompt.to_string();
     }
     
@@ -302,9 +297,19 @@ pub fn create_system_prompt_with_history(base_prompt: &str) -> String {
     
     for (i, cmd) in recent_commands.iter().enumerate() {
         prompt.push_str(&format!("{}. {}\n", i + 1, cmd));
+        if env::var("GEMINI_DEBUG").is_ok() {
+            log_debug(&format!("Adding command to system prompt: {}", cmd));
+        }
     }
     
     prompt.push_str("\nPlease consider this command history when providing assistance.");
+    
+    if env::var("GEMINI_DEBUG").is_ok() {
+        log_debug(&format!("Added {} recent commands to system prompt", recent_commands.len()));
+        log_debug("SYSTEM PROMPT WITH HISTORY:");
+        log_debug(&prompt);
+    }
+    
     prompt
 }
 

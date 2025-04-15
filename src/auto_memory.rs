@@ -13,7 +13,7 @@ pub async fn extract_key_information(
 ) -> Result<Vec<Value>, Box<dyn Error>> {
     // Create prompt to extract key information
     let extraction_prompt = format!(
-        "Extract key pieces of information from this conversation that would be valuable to remember for future interactions.\n\nUSER QUERY:\n\"{}\"\n\nASSISTANT RESPONSE:\n\"{}\"\n\nFor each piece of key information, return a JSON object with these properties:\n- key: A brief, descriptive identifier for this information (e.g., 'project_deadline', 'user_preference_theme')\n- value: The specific information to remember\n- tags: An array of 1-3 categorical tags (e.g., ['project', 'timeline'], ['preference', 'ui'])\n\nReturn these as a JSON array of objects. If no key information is found, return an empty array.\nOnly extract truly important/reusable information. Focus on facts, preferences, project details.\n\nReturn ONLY valid JSON, no other text.",
+        "Extract ONLY the MOST ESSENTIAL information from this conversation that would be valuable to remember for future interactions. Be highly conservative and selective.\n\nUSER QUERY:\n\"{}\"\n\nASSISTANT RESPONSE:\n\"{}\"\n\nBefore creating new memories:\n1. Consider if this information would update/refine any existing memory rather than creating a new one\n2. Only extract information with high confidence that is factual, specific, and likely to be reused\n3. Prioritize user preferences, factual details, and specific project information\n4. Avoid storing transient or contextual information that won't be relevant later\n\nFor each piece of key information, return a JSON object with these properties:\n- key: A brief, descriptive identifier for this information (e.g., 'project_deadline', 'user_preference_theme')\n- value: The specific information to remember\n- tags: An array of 1-3 categorical tags (e.g., ['project', 'timeline'], ['preference', 'ui'])\n- update_strategy: Either 'create_new' or 'update_existing' to indicate how this memory should be handled\n\nReturn these as a JSON array of objects. If no key information is found, return an empty array.\nReturn ONLY valid JSON, no other text.",
         query,
         response
     );
@@ -99,6 +99,14 @@ pub async fn store_memories(
             (parts[0], parts[1])
         });
     
+    // Find memory server with update_memory tool if available
+    let update_memory_server = capabilities.tools.iter()
+        .find(|tool| tool.name.contains("/update_memory"))
+        .map(|tool| {
+            let parts: Vec<&str> = tool.name.split('/').collect();
+            (parts[0], parts[1])
+        });
+    
     if let Some((server_name, tool_name)) = memory_server {
         log_debug(&format!("Using memory server '{}' with tool '{}'", server_name, tool_name));
         
@@ -113,20 +121,60 @@ pub async fn store_memories(
                         .collect::<Vec<String>>())
                     .unwrap_or_else(Vec::new);
                 
-                // Store the memory
-                let result = mcp_host.execute_tool(
-                    server_name,
-                    tool_name,
-                    json!({
-                        "key": key,
-                        "value": value,
-                        "tags": tags
-                    }),
-                ).await;
+                // Check update strategy
+                let update_strategy = memory.get("update_strategy").and_then(|s| s.as_str()).unwrap_or("create_new");
                 
-                match result {
-                    Ok(_) => log_debug(&format!("Stored memory: {} = {}", key, value)),
-                    Err(e) => log_error(&format!("Failed to store memory: {}", e))
+                // If update_strategy is "update_existing" and an update_memory tool exists, use it
+                if update_strategy == "update_existing" && update_memory_server.is_some() {
+                    let (update_server_name, update_tool_name) = update_memory_server.clone().unwrap();
+                    
+                    let result = mcp_host.execute_tool(
+                        update_server_name,
+                        update_tool_name,
+                        json!({
+                            "key": key,
+                            "value": value,
+                            "tags": tags
+                        }),
+                    ).await;
+                    
+                    match result {
+                        Ok(_) => log_debug(&format!("Updated existing memory: {} = {}", key, value)),
+                        Err(e) => {
+                            log_error(&format!("Failed to update memory, falling back to store: {}", e));
+                            // Fallback to store_memory if update fails
+                            let store_result = mcp_host.execute_tool(
+                                server_name,
+                                tool_name,
+                                json!({
+                                    "key": key,
+                                    "value": value,
+                                    "tags": tags
+                                }),
+                            ).await;
+                            
+                            match store_result {
+                                Ok(_) => log_debug(&format!("Stored memory after update failed: {} = {}", key, value)),
+                                Err(e) => log_error(&format!("Failed to store memory: {}", e))
+                            }
+                        }
+                    }
+                } else {
+                    // Store the memory using the regular store_memory tool
+                    let result = mcp_host.execute_tool(
+                        server_name,
+                        tool_name,
+                        json!({
+                            "key": key,
+                            "value": value,
+                            "tags": tags
+                        }),
+                    ).await;
+                    
+                    match result {
+                        Ok(_) => log_debug(&format!("Stored memory: {} = {}", key, value)),
+                        Err(e) => log_error(&format!("Failed to store memory: {}", e))
+                    }
                 }
             }
         }

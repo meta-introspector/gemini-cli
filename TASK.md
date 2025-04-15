@@ -14,4 +14,10 @@ Date Format: YYYY-MM-DD
     *   [ ] Fix `rpc_error.message` access on `RecvError`.
     *   [ ] Fix `Display` trait errors for `Option<u64>` in logging macros.
 *   [ ] **Config Error Handling:** Address `Send`/`Sync`/`Sized` errors for `dyn Error` in `src/mcp/config.rs` (2024-08-18).
-*   [ ] **Code Cleanup:** Remove all remaining unused imports and variables warnings (2024-08-18). 
+*   [ ] **Code Cleanup:** Remove all remaining unused imports and variables warnings (2024-08-18).
+
+## Medium Priority
+
+*   [ ] **Enhance Filesystem MCP Server:** Add more tools (write, patch, create/delete dir, rename, metadata) and range support for read (2024-08-19).
+
+## Backlog 

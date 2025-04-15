@@ -272,10 +272,38 @@ impl McpHost {
         };
 
         // --- 3. Call ActiveServer Method --- 
-        server.execute_tool(request_id, params).await.map_err(|rpc_error| {
-            // Convert JsonRpcError back to String for the McpHost method signature
-            format!("Tool execution error [{}]: {}", rpc_error.code, rpc_error.message)
-        })
+        let result = server.execute_tool(request_id, params).await
+            .map_err(|rpc_error| {
+                // Convert JsonRpcError back to String for the McpHost method signature
+                format!("Tool execution error [{}]: {}", rpc_error.code, rpc_error.message)
+            });
+
+        match &result {
+            Ok(value) => {
+                // Debug logging for the result structure
+                if server_name == "command" {
+                    println!("[DEBUG] Command execution result: {}", serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
+                    
+                    // Specifically check for stdout content
+                    if let Some(stdout) = value.get("stdout") {
+                        println!("[DEBUG] Command stdout: {}", stdout);
+                    } else {
+                        println!("[DEBUG] Command result has no stdout field");
+                    }
+                    
+                    // Check for command result nested inside result field
+                    if let Some(inner_result) = value.get("result") {
+                        println!("[DEBUG] Command has nested result: {}", inner_result);
+                        if let Some(inner_stdout) = inner_result.get("stdout") {
+                            println!("[DEBUG] Nested stdout: {}", inner_stdout);
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("[DEBUG] Command execution error: {}", e),
+        }
+
+        result
     }
 
     // Gets a resource from a specific server

@@ -21,6 +21,15 @@ pub async fn stdout_reader_loop<R: AsyncRead + Unpin>(
                 debug!("Received from '{}': {}", server_name, json_payload);
                 match serde_json::from_str::<Message>(&json_payload) {
                     Ok(Message::Response(response)) => {
+                        // Debug logging for command results
+                        if server_name == "command" && response.result.is_some() {
+                            if let Some(result) = &response.result {
+                                if let Some(stdout) = result.get("stdout") {
+                                    info!("Command result stdout: {}", stdout);
+                                }
+                            }
+                        }
+                        
                         handle_response(server_name, response, capabilities.clone(), pending_requests.clone()).await;
                     }
                     Ok(Message::Notification(notification)) => {

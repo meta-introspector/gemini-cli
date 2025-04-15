@@ -142,9 +142,25 @@ pub async fn call_gemini_api(
     // Create system instruction if provided
     let system_instruction = system_prompt.map(|p| Content {
         parts: vec![Part::text(p.to_string())],
-        role: None,
+        role: Some("system".to_string()),
     });
 
+    // Debug log for system instruction
+    if std::env::var("GEMINI_DEBUG").is_ok() {
+        if let Some(sys_instr) = &system_instruction {
+            if let Some(text) = &sys_instr.parts.first().and_then(|p| p.text.as_ref()) {
+                println!("{}: {}", "DEBUG".yellow(), &format!("System instruction is set with text length: {}", text.len()));
+                println!("{}: {}", "DEBUG".yellow(), "System instruction first 100 chars: ");
+                println!("{}: {}", "DEBUG".yellow(), &text.chars().take(100).collect::<String>());
+                println!("{}: {}", "DEBUG".yellow(), &format!("System instruction role: {:?}", sys_instr.role));
+            } else {
+                println!("{}: {}", "DEBUG".yellow(), "System instruction has no text content!");
+            }
+        } else {
+            println!("{}: {}", "DEBUG".yellow(), "No system instruction provided to API call!");
+        }
+    }
+    
     // Convert chat history to content format expected by Gemini API
     let mut contents = Vec::new();
     
@@ -355,7 +371,7 @@ pub async fn send_function_response(
     // Create system instruction if provided
     let system_instruction = system_prompt.map(|p| Content {
         parts: vec![Part::text(p.to_string())],
-        role: None,
+        role: Some("system".to_string()),
     });
 
     // Create the conversation history
@@ -400,10 +416,32 @@ pub async fn send_function_response(
     };
     contents.push(function_call_content);
     
+    // Process the function result to handle special case for command MCP server
+    // Command results typically have a nested structure with stdout inside
+    let processed_result = if function_call.name.starts_with("command.") {
+        if let Some(inner_result) = function_result.get("result") {
+            // Command results typically have stdout/stderr fields inside a result field
+            inner_result.clone()
+        } else {
+            // If no nested result field, use as-is
+            function_result.clone()
+        }
+    } else {
+        // For non-command tools, use the original result
+        function_result.clone()
+    };
+    
+    // Log the processed result for debugging
+    if std::env::var("DEBUG").is_ok() {
+        println!("[DEBUG] Processed function result: {}", 
+                serde_json::to_string_pretty(&processed_result)
+                .unwrap_or_else(|_| processed_result.to_string()));
+    }
+    
     // Add the function execution result as functionResponse from user
     let function_response_part = Part::function_response(
         function_call.name.clone(),
-        function_result,
+        processed_result,
     );
     
     contents.push(Content {

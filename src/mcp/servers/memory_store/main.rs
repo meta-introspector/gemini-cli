@@ -308,6 +308,23 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                     })),
                 },
                 Tool {
+                    name: "update_memory".to_string(),
+                    description: Some("Update an existing memory by key. Creates a new one if not found.".to_string()),
+                    parameters: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string", "description": "Unique identifier for the memory to update"},
+                            "value": {"type": "string", "description": "New content for the memory"},
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional tags for categorization (will be merged with existing tags)"
+                            }
+                        },
+                        "required": ["key", "value"]
+                    })),
+                },
+                Tool {
                     name: "retrieve_memory_by_key".to_string(),
                     description: Some("Retrieve memories matching a specific key.".to_string()),
                     parameters: Some(json!({
@@ -419,6 +436,44 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                                     }
                                 } else {
                                     let error = JsonRpcError { code: -32602, message: "Invalid store_memory parameters".to_string(), data: None };
+                                    let response = Response { jsonrpc: "2.0".to_string(), id: request_id, result: None, error: Some(error) };
+                                    send_response(response, stdout);
+                                }
+                            }
+                            "update_memory" => {
+                                let key = params.arguments.get("key").and_then(Value::as_str);
+                                let value = params.arguments.get("value").and_then(Value::as_str);
+                                let tags: Vec<String> = params.arguments.get("tags")
+                                    .and_then(Value::as_array)
+                                    .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect())
+                                    .unwrap_or_default();
+
+                                if let (Some(k), Some(v)) = (key, value) {
+                                    match memory_store.update_memory(k, v, tags) {
+                                        Ok(updated) => {
+                                            if let Err(e) = save_memory_store(memory_store) {
+                                                error!("Failed to save memory store after update: {}", e);
+                                            }
+                                            let response = Response {
+                                                jsonrpc: "2.0".to_string(),
+                                                id: request_id,
+                                                result: Some(json!({ 
+                                                    "success": true, 
+                                                    "key": k,
+                                                    "updated": updated
+                                                })),
+                                                error: None,
+                                            };
+                                            send_response(response, stdout);
+                                        }
+                                        Err(e) => {
+                                            let error = JsonRpcError { code: -32001, message: e, data: None };
+                                            let response = Response { jsonrpc: "2.0".to_string(), id: request_id, result: None, error: Some(error) };
+                                            send_response(response, stdout);
+                                        }
+                                    }
+                                } else {
+                                    let error = JsonRpcError { code: -32602, message: "Invalid update_memory parameters".to_string(), data: None };
                                     let response = Response { jsonrpc: "2.0".to_string(), id: request_id, result: None, error: Some(error) };
                                     send_response(response, stdout);
                                 }
@@ -653,6 +708,72 @@ impl MemoryStore {
         });
         
         Ok(())
+    }
+
+    // Update an existing memory or create a new one if not found
+    fn update_memory(&mut self, key: &str, value: &str, tags: Vec<String>) -> Result<bool, String> {
+        if key.trim().is_empty() {
+            return Err("Memory key cannot be empty".to_string());
+        }
+        if value.trim().is_empty() {
+            return Err("Memory value cannot be empty".to_string());
+        }
+        
+        // Find the most recent entry with this key
+        let mut idx_to_update = None;
+        let mut latest_timestamp = 0;
+        
+        for (idx, memory) in self.memories.iter().enumerate() {
+            if memory.key == key && memory.timestamp > latest_timestamp {
+                latest_timestamp = memory.timestamp;
+                idx_to_update = Some(idx);
+            }
+        }
+        
+        if let Some(idx) = idx_to_update {
+            // Skip if value is identical (no actual update needed)
+            if self.memories[idx].value == value {
+                debug!("Skipping update for memory with key '{}' - value unchanged", key);
+                return Ok(false);
+            }
+            
+            // Update the existing entry
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            
+            // Merge tags to avoid duplicates
+            let mut updated_tags = self.memories[idx].tags.clone();
+            for tag in &tags {
+                if !updated_tags.contains(tag) {
+                    updated_tags.push(tag.clone());
+                }
+            }
+            
+            debug!("Updating existing memory with key '{}'", key);
+            self.memories[idx].value = value.to_string();
+            self.memories[idx].timestamp = timestamp;
+            self.memories[idx].tags = updated_tags;
+            
+            return Ok(true);
+        } else {
+            // No existing memory found with this key, create a new one
+            debug!("No existing memory found with key '{}', creating new entry", key);
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            
+            self.memories.push(Memory {
+                key: key.to_string(),
+                value: value.to_string(),
+                timestamp,
+                tags,
+            });
+            
+            return Ok(false); // Not an update, but a new creation
+        }
     }
 
     // Get memories by key (exact match)
