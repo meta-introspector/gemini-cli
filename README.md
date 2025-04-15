@@ -156,17 +156,129 @@ The Gemini CLI now supports the Mission Control Protocol (MCP) for function call
 2. **Access resources** provided by MCP servers
 3. **Combine capabilities** from multiple MCP servers
 
+### Included MCP Servers
+
+#### Filesystem MCP Server
+
+The Gemini CLI includes a built-in filesystem MCP server that provides file and directory operations:
+
+- **List directory contents** with optional recursive traversal
+- **Read and write files** with various modes (create, append, overwrite)
+- **Create and delete** files and directories
+- **Get file information** including size, type, and modification times
+- **Access environment directories** like current working directory and home directory
+
+This server enables Gemini to help with file management tasks directly from the CLI.
+
+#### Command MCP Server
+
+The Gemini CLI also includes a built-in command execution MCP server that allows executing system commands:
+
+- **Execute commands** with arguments, working directory, and environment variables
+- **Execute shell commands** using the system's default shell
+- **Get OS information** including OS type, version, architecture
+- **Access environment variables** available to the current process
+
+This server enables Gemini to help with running commands and scripts directly from the CLI.
+
+### External MCP Servers
+
+Gemini CLI can connect to and use multiple MCP servers simultaneously:
+
+1. **Built-in servers**: The filesystem and command servers are included with gemini-cli
+2. **Local servers**: You can run custom MCP servers locally and connect via stdio
+3. **Remote servers**: You can connect to remote MCP servers using HTTP+SSE transport
+
+When a server is configured, gemini-cli:
+1. Connects to the server during startup
+2. Discovers its tools and resources through the MCP protocol
+3. Makes those tools and resources available to the Gemini model
+4. Handles executing tools and fetching resources when requested by the model
+
+### MCP Server Installation
+
+The built-in MCP servers are automatically installed when you run the installation script:
+
+```bash
+./install.sh
+```
+
+This script:
+1. Builds and installs the gemini-cli binary
+2. Creates wrapper scripts for the filesystem and command MCP servers
+3. Sets up a default MCP server configuration
+
+To install custom MCP servers:
+1. Build or acquire the MCP server executable
+2. Add it to your PATH or specify its full path in the configuration
+3. Update your MCP server configuration (see below)
+
 ### MCP Configuration
 
-MCP servers can be configured in the `~/.config/gemini-cli/mcp.toml` file:
+MCP servers can be configured in the `~/.config/gemini-cli/mcp_servers.json` file:
 
-```toml
-[[servers]]
-name = "example-server"
-command = ["path/to/server/binary"]
-args = ["--config", "path/to/config.json"]
-env = { "SERVER_ENV_VAR" = "value" }
+```json
+[
+  {
+    "name": "filesystem",
+    "enabled": true,
+    "transport": "stdio",
+    "command": ["~/.local/bin/mcp-servers/filesystem-mcp"],
+    "args": []
+  },
+  {
+    "name": "command",
+    "enabled": true,
+    "transport": "stdio",
+    "command": ["~/.local/bin/mcp-servers/command-mcp"],
+    "args": []
+  },
+  {
+    "name": "example-server",
+    "enabled": true,
+    "transport": "stdio",
+    "command": ["path/to/server/binary"],
+    "args": ["--config", "path/to/config.json"],
+    "env": {
+      "SERVER_ENV_VAR": "value"
+    }
+  },
+  {
+    "name": "remote-server",
+    "enabled": true,
+    "transport": "sse",
+    "url": "http://localhost:8080/sse",
+    "headers": {
+      "Authorization": "Bearer token"
+    }
+  }
+]
 ```
+
+Configuration fields:
+- **name**: Unique identifier for the server
+- **enabled**: Whether the server should be loaded (true/false)
+- **transport**: Connection method ("stdio" or "sse")
+- **command**: Command and arguments to start the server (for stdio transport)
+- **args**: Additional arguments for the command (for stdio transport)
+- **env**: Environment variables to set for the server process (for stdio transport)
+- **url**: Server endpoint URL (for sse transport)
+- **headers**: HTTP headers to send (for sse transport)
+
+### Security Considerations
+
+MCP servers, especially the command execution server, can have significant security implications:
+
+1. **User Consent**: gemini-cli always asks for user confirmation before executing any tool
+2. **Permissions**: MCP servers run with the same permissions as the gemini-cli process
+3. **Command Validation**: Always review commands before allowing them to execute
+4. **Tool Access Control**: Disable MCP servers you don't need or trust
+
+For the command MCP server specifically:
+- Review all commands before execution
+- Be careful with commands that modify files or system settings
+- Consider the working directory and environment context
+- Avoid executing commands that could expose sensitive information
 
 ### Function Calling
 
@@ -177,12 +289,12 @@ When Gemini detects that a tool should be used, it will:
 3. Execute the tool if confirmed
 4. Return the results to Gemini for further processing
 
-Example:
+Example using the filesystem MCP server:
 ```
 User: "Find all Python files in the current directory"
 Gemini: I'll help you find Python files in the current directory. I'll use the file system tool to do this.
 
-I'll execute: find_files(pattern="*.py", directory=".")
+I'll execute: list_directory(path=".", recursive=true)
 Would you like me to execute this command? (y/n): y
 
 Found 5 Python files:
@@ -193,12 +305,26 @@ Found 5 Python files:
 - ./setup.py
 ```
 
+Example using the command MCP server:
+```
+User: "Show me the current disk usage"
+Gemini: I'll help you check the disk usage. I'll use the command execution tool for this.
+
+I'll execute: execute_shell(command="df -h")
+Would you like me to execute this command? (y/n): y
+
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1       234G   67G  156G  31% /
+/dev/sdb1       932G  412G  474G  47% /data
+```
+
 ### Resource Access
 
 Gemini can also access resources provided by MCP servers, such as:
 
 - File system information
-- System metrics
+- System metrics and OS information
+- Environment variables
 - Network status
 - And more, depending on the MCP server implementation
 
