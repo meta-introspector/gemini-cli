@@ -11,7 +11,7 @@ use reqwest::Client;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde_json;
 
-use crate::logging::{log_debug, log_error};
+use crate::logging::log_debug;
 
 // --- Constants --- //
 pub const TOKEN_THRESHOLD: usize = 700000; // 700k tokens 
@@ -202,7 +202,6 @@ pub fn get_recent_commands(count: usize) -> Vec<String> {
     };
     
     let is_zsh = shell.contains("zsh");
-    let is_bash = shell.contains("bash");
     
     if env::var("GEMINI_DEBUG").is_ok() {
         log_debug(&format!("Detected shell type: {}", shell));

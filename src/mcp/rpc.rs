@@ -95,10 +95,6 @@ impl Response {
         }
     }
     
-    // Helper to check if ID is null
-    pub fn has_null_id(&self) -> bool {
-        self.id.is_null()
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
