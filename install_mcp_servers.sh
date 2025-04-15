@@ -135,7 +135,7 @@ cat > "$MCP_CONFIG_EXAMPLE" << 'EOF'
     "auto_execute": []
   },
   {
-    "name": "memory-store",
+    "name": "memory_store",
     "enabled": true,
     "transport": "stdio",
     "command": ["~/.local/bin/mcp-servers/memory-store-mcp"],
@@ -240,25 +240,25 @@ else
         fi
     fi
     
-    echo "Checking for memory-store MCP server in configuration..."
+    echo "Checking for memory_store MCP server in configuration..."
     
-    # Check if the memory-store server is already in the config
-    if ! grep -q '"name": *"memory-store"' "$MCP_CONFIG_FILE"; then
-        echo "Memory-store MCP server not found in configuration, adding it..."
+    # Check if the memory_store server is already in the config
+    if ! grep -q '"name": *"memory_store"' "$MCP_CONFIG_FILE"; then
+        echo "Memory store MCP server not found in configuration, adding it..."
         
         # Create a temporary file with updated configuration
         TMP_CONFIG_FILE=$(mktemp)
         
-        # Use jq to add the memory-store server if jq is available
+        # Use jq to add the memory_store server if jq is available
         if command -v jq > /dev/null; then
             # Check if the config already has auto_execute fields
             if grep -q '"auto_execute"' "$MCP_CONFIG_FILE"; then
-                # Use jq to add the memory-store server config with auto_execute
-                jq '. += [{"name": "memory-store", "enabled": true, "transport": "stdio", "command": ["~/.local/bin/mcp-servers/memory-store-mcp"], "args": [], "auto_execute": []}]' \
+                # Use jq to add the memory_store server config with auto_execute
+                jq '. += [{"name": "memory_store", "enabled": true, "transport": "stdio", "command": ["~/.local/bin/mcp-servers/memory-store-mcp"], "args": [], "auto_execute": ["store_memory", "list_all_memories", "retrieve_memory_by_key", "retrieve_memory_by_tag", "delete_memory_by_key"]}]' \
                    "$MCP_CONFIG_FILE" > "$TMP_CONFIG_FILE"
             else 
                 # Add without auto_execute to maintain backward compatibility
-                jq '. += [{"name": "memory-store", "enabled": true, "transport": "stdio", "command": ["~/.local/bin/mcp-servers/memory-store-mcp"], "args": []}]' \
+                jq '. += [{"name": "memory_store", "enabled": true, "transport": "stdio", "command": ["~/.local/bin/mcp-servers/memory-store-mcp"], "args": []}]' \
                    "$MCP_CONFIG_FILE" > "$TMP_CONFIG_FILE"
             fi
         else
@@ -275,7 +275,7 @@ else
                 # Add the comma and new entry
                 echo "  }," >> "$TMP_CONFIG_FILE"
                 echo "  {" >> "$TMP_CONFIG_FILE"
-                echo "    \"name\": \"memory-store\"," >> "$TMP_CONFIG_FILE"
+                echo "    \"name\": \"memory_store\"," >> "$TMP_CONFIG_FILE"
                 echo "    \"enabled\": true," >> "$TMP_CONFIG_FILE"
                 echo "    \"transport\": \"stdio\"," >> "$TMP_CONFIG_FILE"
                 echo "    \"command\": [\"~/.local/bin/mcp-servers/memory-store-mcp\"]," >> "$TMP_CONFIG_FILE"
@@ -283,13 +283,13 @@ else
                 
                 # Add auto_execute if the existing config uses it
                 if grep -q '"auto_execute"' "$MCP_CONFIG_FILE"; then
-                    echo "    \"auto_execute\": []" >> "$TMP_CONFIG_FILE"
+                    echo "    \"auto_execute\": [\"store_memory\", \"list_all_memories\", \"retrieve_memory_by_key\", \"retrieve_memory_by_tag\", \"delete_memory_by_key\"]" >> "$TMP_CONFIG_FILE"
                 fi
                 
                 echo "  }" >> "$TMP_CONFIG_FILE"
                 echo "]" >> "$TMP_CONFIG_FILE"
             else
-                echo "Cannot safely update config file without jq. Please install jq or manually add the memory-store server."
+                echo "Cannot safely update config file without jq. Please install jq or manually add the memory_store server."
                 echo "Example configuration updated at $MCP_CONFIG_EXAMPLE"
                 rm "$TMP_CONFIG_FILE"
                 # Continue without erroring out
@@ -299,10 +299,10 @@ else
         # If the temp file exists and has content, replace the original
         if [ -f "$TMP_CONFIG_FILE" ] && [ -s "$TMP_CONFIG_FILE" ]; then
             mv "$TMP_CONFIG_FILE" "$MCP_CONFIG_FILE"
-            echo "Updated MCP configuration to include memory-store server"
+            echo "Updated MCP configuration to include memory_store server"
         else
             rm -f "$TMP_CONFIG_FILE"
-            echo "Failed to add memory-store server to configuration"
+            echo "Failed to add memory_store server to configuration"
         fi
     fi
 fi

@@ -22,7 +22,7 @@ impl Default for AppConfig {
         Self {
             api_key: None,
             system_prompt: Some(
-                "You are a helpful command-line assistant for Linux. \
+                "You are a helpful assistant that lives in the command line interface. You are friendly, and a professional programmer and developer. \
                 You have access to the last few commands the user has run in their terminal. \
                 Use this context to provide more relevant answers. When asked about commands, \
                 provide concise and practical solutions focused on the user's needs."

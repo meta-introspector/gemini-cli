@@ -113,6 +113,16 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         }
     };
     
+    // Deduplicate existing memories on startup
+    let deduped_count = memory_store.deduplicate();
+    if deduped_count > 0 {
+        info!("Removed {} duplicate memories during startup", deduped_count);
+        // Save the deduplicated store
+        if let Err(e) = save_memory_store(&memory_store) {
+            warn!("Failed to save deduplicated memory store: {}", e);
+        }
+    }
+    
     // Set up termination signal handling
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -280,7 +290,7 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
             
             // Define tools
             let tools = vec![
-                 Tool {
+                Tool {
                     name: "store_memory".to_string(),
                     description: Some("Store a key-value pair with optional tags.".to_string()),
                     parameters: Some(json!({
@@ -289,8 +299,8 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                             "key": {"type": "string", "description": "Unique identifier for the memory"},
                             "value": {"type": "string", "description": "Content of the memory"},
                             "tags": {
-                                "type": "array", 
-                                "items": {"type": "string"}, 
+                                "type": "array",
+                                "items": {"type": "string"},
                                 "description": "Optional tags for categorization"
                             }
                         },
@@ -300,13 +310,13 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                 Tool {
                     name: "retrieve_memory_by_key".to_string(),
                     description: Some("Retrieve memories matching a specific key.".to_string()),
-                     parameters: Some(json!({
+                    parameters: Some(json!({
                         "type": "object",
                         "properties": {"key": {"type": "string", "description": "The key to search for"}},
                         "required": ["key"]
                     })),
                 },
-                 Tool {
+                Tool {
                     name: "retrieve_memory_by_tag".to_string(),
                     description: Some("Retrieve memories matching a specific tag.".to_string()),
                     parameters: Some(json!({
@@ -318,9 +328,9 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                 Tool {
                     name: "list_all_memories".to_string(),
                     description: Some("List all stored memories.".to_string()),
-                    parameters: Some(json!({"type": "object", "properties": {}})), // No parameters
+                    parameters: Some(json!({"type": "object", "properties": {}})),
                 },
-                 Tool {
+                Tool {
                     name: "delete_memory_by_key".to_string(),
                     description: Some("Delete memories matching a specific key.".to_string()),
                     parameters: Some(json!({
@@ -329,6 +339,11 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                         "required": ["key"]
                     })),
                 },
+                Tool {
+                    name: "deduplicate_memories".to_string(),
+                    description: Some("Remove duplicate memories, keeping only the most recent version of each key.".to_string()),
+                    parameters: Some(json!({"type": "object", "properties": {}})),
+                }
             ];
             
             // Define resources (optional for this server)
@@ -370,7 +385,7 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                 // Parse the ExecuteToolParams structure
                 match serde_json::from_value::<rpc::ExecuteToolParams>(params_value.clone()) {
                     Ok(params) => {
-                        debug!("Executing tool: '{}' with args: {:?}", params.tool_name, params.arguments);
+                        debug!("Executing tool: {} with args: {:?}", params.tool_name, params.arguments);
                         
                         match params.tool_name.as_str() {
                             "store_memory" => {
@@ -403,7 +418,7 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                                         }
                                     }
                                 } else {
-                                    let error = JsonRpcError { code: -32602, message: "Invalid parameters for store_memory: missing key or value".to_string(), data: None };
+                                    let error = JsonRpcError { code: -32602, message: "Invalid store_memory parameters".to_string(), data: None };
                                     let response = Response { jsonrpc: "2.0".to_string(), id: request_id, result: None, error: Some(error) };
                                     send_response(response, stdout);
                                 }
@@ -471,6 +486,28 @@ async fn handle_request(request: Request, memory_store: &mut MemoryStore, stdout
                                      let response = Response { jsonrpc: "2.0".to_string(), id: request_id, result: None, error: Some(error) };
                                      send_response(response, stdout);
                                 }
+                            }
+                            "deduplicate_memories" => {
+                                let removed_count = memory_store.deduplicate();
+                                
+                                // Save the deduplicated store if changes were made
+                                if removed_count > 0 {
+                                    if let Err(e) = save_memory_store(memory_store) {
+                                        error!("Failed to save memory store after deduplication: {}", e);
+                                    }
+                                }
+                                
+                                let response = Response {
+                                    jsonrpc: "2.0".to_string(),
+                                    id: request_id,
+                                    result: Some(json!({ 
+                                        "success": true, 
+                                        "removed_count": removed_count,
+                                        "remaining_count": memory_store.memories.len()
+                                    })),
+                                    error: None,
+                                };
+                                send_response(response, stdout);
                             }
                             _ => {
                                 // Unknown tool
@@ -550,12 +587,64 @@ impl MemoryStore {
             return Err("Memory value cannot be empty".to_string());
         }
         
+        // Check for exact duplicates (same key and value)
+        if self.memories.iter().any(|m| m.key == key && m.value == value) {
+            debug!("Skipping duplicate memory with key '{}' and identical value", key);
+            return Ok(());
+        }
+        
+        // Check for similar entries with same key and normalize tags
+        let existing_entries: Vec<_> = self.memories.iter()
+            .filter(|m| m.key == key)
+            .collect();
+        
+        if !existing_entries.is_empty() {
+            // If we have existing entries with same key but different values,
+            // update the most recent one instead of adding a new entry
+            if existing_entries.iter().any(|m| m.value != value) {
+                debug!("Updating existing memory with key '{}'", key);
+                
+                // Find the most recent entry with this key
+                let mut idx_to_update = None;
+                let mut latest_timestamp = 0;
+                
+                for (idx, memory) in self.memories.iter().enumerate() {
+                    if memory.key == key && memory.timestamp > latest_timestamp {
+                        latest_timestamp = memory.timestamp;
+                        idx_to_update = Some(idx);
+                    }
+                }
+                
+                if let Some(idx) = idx_to_update {
+                    // Update the existing entry instead of adding a new one
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    
+                    // Merge tags to avoid duplicates
+                    let mut updated_tags = self.memories[idx].tags.clone();
+                    for tag in &tags {
+                        if !updated_tags.contains(tag) {
+                            updated_tags.push(tag.clone());
+                        }
+                    }
+                    
+                    self.memories[idx].value = value.to_string();
+                    self.memories[idx].timestamp = timestamp;
+                    self.memories[idx].tags = updated_tags;
+                    
+                    return Ok(());
+                }
+            }
+        }
+        
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         
-        // Simple add for now, no duplicate key check
+        // Add new memory if we haven't found a duplicate or updatable entry
         self.memories.push(Memory {
             key: key.to_string(),
             value: value.to_string(),
@@ -596,8 +685,38 @@ impl MemoryStore {
         self.memories.retain(|m| m.key != key);
         let deleted_count = initial_len - self.memories.len();
         if deleted_count > 0 {
-             debug!("Deleted {} memories with key '{}'", deleted_count, key);
+             debug!("Deleted {} memories with key {}", deleted_count, key);
         }
         deleted_count
+    }
+    
+    // Deduplicate the memory store
+    fn deduplicate(&mut self) -> usize {
+        let initial_len = self.memories.len();
+        
+        // Sort memories by timestamp (newest first) to keep the most recent entries
+        self.memories.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        
+        // Track keys we've already processed
+        let mut seen_keys = std::collections::HashSet::new();
+        let mut to_keep = Vec::new();
+        
+        // First pass: keep one entry per key (the most recent one)
+        for memory in self.memories.drain(..) {
+            if !seen_keys.contains(&memory.key) {
+                seen_keys.insert(memory.key.clone());
+                to_keep.push(memory);
+            }
+        }
+        
+        // Replace the memories with the deduplicated list
+        self.memories = to_keep;
+        
+        let removed_count = initial_len - self.memories.len();
+        if removed_count > 0 {
+            debug!("Removed {} duplicate memories during deduplication", removed_count);
+        }
+        
+        removed_count
     }
 } 

@@ -5,6 +5,7 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use colored::*;
+use env_logger;
 
 mod cli;
 mod config;
@@ -29,6 +30,9 @@ use crate::output::print_usage_instructions;
 /// Main function - handle command line args and talk to Gemini API
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Initialize logger
+    env_logger::init();
+    
     // Load environment variables
     dotenv().ok();
     
@@ -89,11 +93,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // Get system prompt (default or custom)
     let system_prompt = config.system_prompt.clone().unwrap_or_else(|| {
-        "You are a helpful command-line assistant for Linux.".to_string()
+        "You are a helpful assistant that lives in the command line interface. You are friendly, and a professional programmer and developer.".to_string()
     });
     
     // Get/create chat history
     let session_id = generate_session_id();
+    
+    // Print the export command when running in debug mode or when session ID is day-based
+    // This helps users maintain conversation continuity
+    if (env::var("DEBUG").is_ok() || session_id.starts_with("day_")) && !args.disable_history && args.prompt.is_some() {
+        println!("{}", "\nTo maintain chat history across commands, run:".cyan());
+        println!("export GEMINI_SESSION_ID=\"{}\"", session_id);
+        println!();
+    }
     
     // Initialize MCP server host if any are configured
     let mut mcp_host: Option<crate::mcp::host::McpHost> = None;

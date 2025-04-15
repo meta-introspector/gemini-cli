@@ -17,7 +17,7 @@ impl GeminiModel {
     pub fn new(api_key: String, model_name: Option<String>) -> Self {
         Self {
             api_key,
-            model_name: model_name.unwrap_or_else(|| "gemini-2.5-pro-exp-03-25".to_string()),
+            model_name: model_name.unwrap_or_else(|| "gemini-2.5-pro-preview-03-25".to_string()),
         }
     }
 }
@@ -153,9 +153,16 @@ pub async fn call_gemini_api(
         for msg in &history.messages {
             // Skip system messages in the main content list if they exist
             if msg.role != "system" {
+                // Map our internal roles to Gemini API roles
+                let api_role = match msg.role.as_str() {
+                    "user" => "user",
+                    "assistant" => "model", // Map assistant to model
+                    _ => continue, // Skip any other roles
+                };
+                
                 contents.push(Content {
                     parts: vec![Part::text(msg.content.clone())],
-                    role: Some(msg.role.clone()), // Ensure role is set for user/assistant
+                    role: Some(api_role.to_string()), // Use the mapped role
                 });
             }
         }
@@ -335,6 +342,7 @@ pub async fn send_function_response(
     original_user_prompt: &str,
     function_call: &crate::mcp::gemini::FunctionCall,
     function_result: serde_json::Value,
+    chat_history: Option<&ChatHistory>,
 ) -> Result<String, Box<dyn Error>> {
     // Create model object
     let model = get_gemini_model(api_key.to_string(), None);
@@ -350,19 +358,36 @@ pub async fn send_function_response(
         role: None,
     });
 
-    // Create the conversation history with:
-    // 1. User's original prompt (as user)
-    // 2. Model's function call (as model)
-    // 3. Function execution result (as user)
+    // Create the conversation history
     let mut contents = Vec::new();
     
-    // 1. User's original prompt
-    contents.push(Content {
-        parts: vec![Part::text(original_user_prompt.to_string())],
-        role: Some("user".to_string()),
-    });
+    // Add previous messages from history if available
+    if let Some(history) = chat_history {
+        for msg in &history.messages {
+            // Skip system messages in the main content list
+            if msg.role != "system" {
+                // Map our internal roles to Gemini API roles
+                let api_role = match msg.role.as_str() {
+                    "user" => "user",
+                    "assistant" => "model", // Map assistant to model
+                    _ => continue, // Skip any other roles
+                };
+                
+                contents.push(Content {
+                    parts: vec![Part::text(msg.content.clone())],
+                    role: Some(api_role.to_string()), // Use the mapped role
+                });
+            }
+        }
+    } else {
+        // If no history, just add the current user prompt
+        contents.push(Content {
+            parts: vec![Part::text(original_user_prompt.to_string())],
+            role: Some("user".to_string()),
+        });
+    }
     
-    // 2. Model's function call
+    // Add the function call from the model if it's not already in the history
     // We need to clone the function_call to avoid ownership issues
     let function_call_clone = function_call.clone();
     let function_call_content = Content {
@@ -371,11 +396,11 @@ pub async fn send_function_response(
             function_call: Some(function_call_clone),
             function_response: None,
         }],
-        role: Some("model".to_string()),
+        role: Some("model".to_string()), // Always use "model" for Gemini API
     };
     contents.push(function_call_content);
     
-    // 3. Function execution result as functionResponse from user
+    // Add the function execution result as functionResponse from user
     let function_response_part = Part::function_response(
         function_call.name.clone(),
         function_result,

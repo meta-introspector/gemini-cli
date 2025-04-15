@@ -27,7 +27,9 @@ pub struct McpHost {
 
 impl McpHost {
     pub async fn new(configs: Vec<McpServerConfig>) -> Result<Self, String> {
-        println!("Initializing MCP Host with {} server configs", configs.len());
+        if std::env::var("DEBUG").is_ok() {
+            println!("Initializing MCP Host with {} server configs", configs.len());
+        }
         
         let host = McpHost {
             servers: Arc::new(Mutex::new(HashMap::new())),
@@ -38,7 +40,9 @@ impl McpHost {
         let mut servers_map = HashMap::new(); // Temp map to build servers before locking
 
         for config in configs {
-            println!("Starting MCP server '{}' with transport {:?}", config.name, config.transport);
+            if std::env::var("DEBUG").is_ok() {
+                println!("Starting MCP server '{}' with transport {:?}", config.name, config.transport);
+            }
             
             if config.transport == McpTransport::Stdio {
                 match ActiveServer::launch_stdio(
@@ -53,7 +57,9 @@ impl McpHost {
                             match init_future.await {
                                 Ok(Ok(_)) => {
                                     info!("MCP Server '{}' initialized successfully.", server_name);
-                                    println!("MCP Server '{}' initialized successfully.", server_name);
+                                    if std::env::var("DEBUG").is_ok() {
+                                        println!("MCP Server '{}' initialized successfully.", server_name);
+                                    }
                                     Ok(server_name)
                                 }
                                 Ok(Err(rpc_error)) => {
@@ -114,7 +120,7 @@ impl McpHost {
             }
         }
 
-        // Optionally remove failed servers from the host's map or mark them as errored
+        // Optionally remove failed servers from the host\'s map or mark them as errored
         if !failed_servers.is_empty() {
             warn!(
                 "Some MCP servers failed to initialize: {:?}",
@@ -122,8 +128,12 @@ impl McpHost {
             );
             println!("Some MCP servers failed to initialize: {:?}", failed_servers);
             // Decide if this should be a hard error for McpHost::new()
-            // return Err(format!("Failed to initialize servers: {:?}", failed_servers));
-        } else {
+            // Log the specific failures before returning the error
+            for failure in &failed_servers {
+                error!("MCP Host Initialization Failure: {}", failure);
+            }
+            return Err(format!("Failed to initialize servers: {:?}", failed_servers));
+        } else if std::env::var("DEBUG").is_ok() {
             println!("All MCP servers initialized successfully!");
         }
 
@@ -134,9 +144,15 @@ impl McpHost {
     pub async fn get_all_capabilities(&self) -> ServerCapabilities {
         let servers = self.servers.lock().await;
         let mut combined_caps = ServerCapabilities::default();
+        debug!("[DEBUG get_all_capabilities] Checking capabilities for {} servers", servers.len());
         
         for (server_name, server) in servers.iter() {
-            if let Some(caps) = server.capabilities.lock().await.as_ref() {
+            debug!("[DEBUG get_all_capabilities] Checking server: {}", server_name);
+            let server_capabilities_lock = server.capabilities.lock().await;
+            let maybe_caps = server_capabilities_lock.as_ref();
+            
+            if let Some(caps) = maybe_caps {
+                debug!("[DEBUG get_all_capabilities] Found capabilities for server: {}", server_name);
                 // Prefix tool and resource names with server name to avoid collisions
                 for mut tool in caps.tools.iter().cloned() {
                     // Inject server name into tool schema references if present
@@ -172,9 +188,12 @@ impl McpHost {
                     
                     combined_caps.resources.push(resource);
                 }
+            } else {
+                debug!("[DEBUG get_all_capabilities] No capabilities found (is None) for server: {}", server_name);
             }
         }
-        
+        drop(servers); // Explicitly drop the lock guard
+        debug!("[DEBUG get_all_capabilities] Combined capabilities: {:?}", combined_caps);
         combined_caps
     }
 
@@ -209,7 +228,7 @@ impl McpHost {
         tool_name: &str,
         args: Value,
     ) -> Result<Value, String> {
-        if std::env::var("GEMINI_DEBUG").is_ok() {
+        if std::env::var("DEBUG").is_ok() {
             println!("[DEBUG] McpHost execute_tool: server='{}', tool='{}'", server_name, tool_name);
         }
         let server = Self::find_ready_server(&self.servers, server_name).await?;
@@ -220,7 +239,7 @@ impl McpHost {
             let empty_vec = Vec::new();
             let available_tools = match caps_guard.as_ref() {
                 Some(caps) => {
-                    if std::env::var("GEMINI_DEBUG").is_ok() {
+                    if std::env::var("DEBUG").is_ok() {
                         println!("[DEBUG] Available tools:");
                         for tool in &caps.tools {
                             println!("[DEBUG]   - '{}'", tool.name);
@@ -232,7 +251,7 @@ impl McpHost {
             };
             
             let found = available_tools.iter().any(|t| t.name == tool_name);
-            if std::env::var("GEMINI_DEBUG").is_ok() {
+            if std::env::var("DEBUG").is_ok() {
                 println!("[DEBUG] Tool '{}' found in capabilities: {}", tool_name, found);
             }
             found

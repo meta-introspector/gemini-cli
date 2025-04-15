@@ -87,6 +87,23 @@ pub async fn process_prompt(
     // Enhance query with relevant memories if memory broker is enabled
     let enhanced_prompt = if config.enable_memory_broker.unwrap_or(true) && mcp_host.is_some() {
         log_debug("Memory broker is enabled, enhancing query with relevant memories");
+        
+        // First, deduplicate existing memories to maintain a clean memory store
+        // Do this occasionally to avoid overhead on every query
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        // Deduplicate every ~10 queries (deterministic based on time)
+        if current_time % 10 == 0 {
+            log_debug("Performing periodic memory deduplication");
+            if let Err(e) = memory_broker::deduplicate_memories(mcp_host.as_ref().unwrap()).await {
+                log_error(&format!("Failed to deduplicate memories: {}", e));
+            }
+        }
+        
+        // Then retrieve all memories
         let memories = memory_broker::retrieve_all_memories(mcp_host.as_ref().unwrap()).await?;
         
         if !memories.is_empty() {
@@ -223,7 +240,8 @@ pub async fn process_prompt(
                                 Some(&system_prompt_with_history),
                                 &enhanced_prompt, // Original user prompt
                                 function_call,    // The function call made by the model
-                                result.clone(),    // The result from function execution
+                                result.clone(),   // The result from function execution
+                                Some(&chat_history), // Pass the chat history
                             ).await {
                                 Ok(final_response) => {
                                     spinner.finish_and_clear();

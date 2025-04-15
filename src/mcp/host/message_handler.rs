@@ -76,12 +76,22 @@ pub async fn handle_response(
     capabilities: Arc<Mutex<Option<ServerCapabilities>>>,
     pending_requests: Arc<Mutex<HashMap<u64, PendingRequest>>>,
 ) {
+    // Check if the response ID is null, which might be a notification-style response
+    // that doesn't require tracking/handling (often the case with autoExecute responses)
+    if response.id == Value::Null {
+        debug!(
+            "Received response with null ID from '{}'. This may be expected for auto-execute commands.",
+            server_name
+        );
+        return;
+    }
+
     // Attempt to parse the response ID as u64
     let request_id_opt: Option<u64> = match &response.id {
         Value::Number(n) => n.as_u64(),
         // Allow string IDs if they parse to u64, otherwise ignore
         Value::String(s) => s.parse::<u64>().ok(),
-        _ => None, // Ignore null or other types
+        _ => None, // Ignore other types (should not happen due to null check above)
     };
 
     // Only proceed if we have a valid u64 ID
@@ -89,8 +99,8 @@ pub async fn handle_response(
         Some(id) => id,
         None => {
             error!(
-                "Received response with invalid or missing ID from '{}'. Ignoring.",
-                server_name
+                "Received response with invalid ID format from '{}': {:?}. Ignoring.",
+                server_name, response.id
             );
             return;
         }
@@ -101,15 +111,20 @@ pub async fn handle_response(
     if let Some(pending_request) = pending {
         // Check if this was the Initialize response
         if pending_request.method == "initialize" {
+            debug!("[DEBUG handle_response] Received initialize response for server '{}', req_id={}", server_name, request_id);
             match response.result() {
                 Ok(result) => {
+                    debug!("[DEBUG handle_response] Initialize raw result value for '{}': {:?}", server_name, result);
                     match serde_json::from_value::<rpc::InitializeResult>(result.clone()) {
                         Ok(init_result) => {
                             info!(
                                 "Received capabilities from server '{}': {:?}",
                                 server_name, init_result.capabilities
                             );
+                            // Log just before storing
+                            debug!("[DEBUG handle_response] Storing capabilities for '{}': {:?}", server_name, init_result.capabilities);
                             *capabilities.lock().await = Some(init_result.capabilities);
+                            debug!("[DEBUG handle_response] Capabilities potentially stored for '{}'", server_name);
                             // Send success back to the initialization waiter
                             let _ = pending_request.responder.send(Ok(result)); // Send original result value
                         }
@@ -118,6 +133,7 @@ pub async fn handle_response(
                                 "Failed to deserialize initialize result from '{}': {}. Value: {:?}",
                                 server_name, e, result
                             );
+                            debug!("[DEBUG handle_response] Clearing capabilities due to parse error for '{}'", server_name);
                             let _ = pending_request.responder.send(Err(JsonRpcError {
                                 code: -32603, // Internal error
                                 message: format!("Failed to parse initialize result: {}", e),
@@ -130,6 +146,7 @@ pub async fn handle_response(
                 }
                 Err(error) => {
                     warn!("Received error for req id={} method='{}' from '{}': {:?}", request_id, pending_request.method, server_name, error);
+                    debug!("[DEBUG handle_response] Clearing capabilities due to error response for '{}'", server_name);
                     let _ = pending_request.responder.send(Err(error));
                     // Clear capabilities on error
                     *capabilities.lock().await = None;

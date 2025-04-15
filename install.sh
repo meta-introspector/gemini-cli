@@ -131,7 +131,9 @@ fi
 
 # Copy the binary
 echo -e "\n${YELLOW}Installing $BINARY_NAME command...${NC}"
-cp "$SOURCE_DIR/target/release/gemini-cli" "$INSTALL_PATH"
+# Force remove existing file/symlink first to avoid dangling symlink errors
+rm -f "$INSTALL_PATH"
+cp "$SOURCE_DIR/target/release/$BINARY_NAME" "$INSTALL_PATH"
 chmod +x "$INSTALL_PATH"
 echo -e "${GREEN}✓ Binary installed: $INSTALL_PATH${NC}"
 

@@ -71,7 +71,7 @@ impl Request {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Response {
     pub jsonrpc: String, // Should always be "2.0"
-    pub id: Value, // Must match the request ID
+    pub id: Value, // Must match the request ID (can be null for special cases)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -93,6 +93,11 @@ impl Response {
                 data: None,
             })
         }
+    }
+    
+    // Helper to check if ID is null
+    pub fn has_null_id(&self) -> bool {
+        self.id.is_null()
     }
 }
 

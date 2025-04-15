@@ -42,7 +42,8 @@ pub fn convert_mcp_tools_to_gemini_functions(tools: &[Tool]) -> Vec<FunctionDef>
     for tool in tools {
         // Use the parameters field if available, otherwise create a minimal schema
         let parameters = if let Some(params) = &tool.parameters {
-            params.clone()
+            // Sanitize the JSON schema to remove fields not supported by Gemini
+            sanitize_json_schema(params.clone())
         } else {
             // Default to an empty object schema
             json!({
@@ -70,17 +71,47 @@ pub fn convert_mcp_tools_to_gemini_functions(tools: &[Tool]) -> Vec<FunctionDef>
     functions
 }
 
+/// Sanitize JSON schema to make it compatible with the Gemini API
+/// Removes fields that are not supported by Gemini
+fn sanitize_json_schema(mut schema: Value) -> Value {
+    // If it's an object, process its fields
+    if let Value::Object(ref mut obj) = schema {
+        // Remove unsupported fields at this level
+        obj.remove("default");
+        obj.remove("additionalProperties");
+        
+        // Process nested properties if any
+        if let Some(props_obj) = obj.get_mut("properties") {
+            if let Value::Object(props_map) = props_obj {
+                for (_, prop_value) in props_map.iter_mut() {
+                    // Recursively sanitize each property
+                    *prop_value = sanitize_json_schema(prop_value.clone());
+                }
+            }
+        }
+        
+        // Process items schema for arrays
+        if let Some(items) = obj.get_mut("items") {
+            *items = sanitize_json_schema(items.clone());
+        }
+    }
+    
+    schema
+}
+
 /// Builds a system prompt with MCP capabilities
 pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String {
-    println!("Building MCP system prompt with {} tools and {} resources", tools.len(), resources.len());
+    if std::env::var("DEBUG").is_ok() {
+        println!("Building MCP system prompt with {} tools and {} resources", tools.len(), resources.len());
+        
+        // Debug: Log all tool names to help with troubleshooting
+        println!("Available MCP tools:");
+        for tool in tools {
+            println!("  - {}", tool.name);
+        }
+    }
     
     let mut prompt = String::from("\n\nYou have access to the following tools and resources through a Machine Capability Protocol (MCP) interface. Use the function calling capability to interact with these tools; DO NOT suggest or describe function calls in your text response.\n\n");
-    
-    // Debug: Log all tool names to help with troubleshooting
-    println!("Available MCP tools:");
-    for tool in tools {
-        println!("  - {}", tool.name);
-    }
     
     // Add Tools Section
     if !tools.is_empty() {
@@ -201,7 +232,7 @@ pub async fn process_function_call(
     // Extract the server and tool name from the qualified name
     // Convert dots back to slashes for MCP host compatibility
     let qualified_name = &function_call.name.replace(".", "/");
-    if std::env::var("GEMINI_DEBUG").is_ok() {
+    if std::env::var("DEBUG").is_ok() {
         println!("[DEBUG] Processing function call: original name='{}', converted name='{}'", 
             &function_call.name, qualified_name);
     }
@@ -238,11 +269,14 @@ pub async fn process_function_call(
             // Add this tool to the auto-execute list
             mcp_host.add_to_auto_execute(server_name, tool_name).await?;
         }
+    } else {
+        // Auto-execute the function without confirmation
+        if std::env::var("DEBUG").is_ok() {
+            println!("[DEBUG] Executing tool: server='{}', tool='{}'", server_name, tool_name);
+        }
+        
+        return mcp_host.execute_tool(server_name, tool_name, function_call.arguments.clone()).await;
     }
     
-    if std::env::var("GEMINI_DEBUG").is_ok() {
-        println!("[DEBUG] Executing tool: server='{}', tool='{}'", server_name, tool_name);
-    }
-
-    mcp_host.execute_tool(server_name, tool_name, function_call.arguments.clone()).await
+    Ok(Value::Null)
 } 

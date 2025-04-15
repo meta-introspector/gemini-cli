@@ -51,19 +51,31 @@ pub async fn filter_relevant_memories(
         return Ok(Vec::new());
     }
     
-    // Format memories for the prompt
+    // Log the number of memories being processed
+    log_debug(&format!("Processing {} memories for relevance filtering", memories.len()));
+    
+    // Format memories for the prompt - include key, value, and tags for better context
     let formatted_memories = memories.iter()
-        .filter_map(|m| {
+        .enumerate()
+        .filter_map(|(i, m)| {
             let key = m.get("key").and_then(|k| k.as_str())?;
             let value = m.get("value").and_then(|v| v.as_str())?;
-            Some(format!("- {} = {}", key, value))
+            let tags = m.get("tags")
+                .and_then(|t| t.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|tag| tag.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(", "))
+                .unwrap_or_default();
+            
+            Some(format!("{}: key=\"{}\" tags=[{}] value=\"{}\"", i, key, tags, value))
         })
         .collect::<Vec<String>>()
         .join("\n");
     
-    // Create prompt to filter relevant memories
+    // Create prompt to filter relevant memories with clear instructions
     let prompt = format!(
-        "Given a user query and a list of memory items, determine which memories (if any) are RELEVANT to answering the query. Return the indices of relevant memories ONLY in JSON format.\n\nQUERY: \"{}\"\n\nMEMORIES:\n{}\n\nRespond with JUST a JSON array of integers representing the 0-based indices of relevant memories. If no memories are relevant, return an empty array [].",
+        "Given a user query and a list of memory items, determine which memories (if any) are RELEVANT to answering the query. Return the indices of relevant memories in JSON format.\n\nQUERY: \"{}\"\n\nMEMORIES:\n{}\n\nYour task:\n1. Analyze each memory carefully for relevance to the query\n2. Consider both direct and indirect relevance\n3. A memory is relevant if it would help answer the query or provide important context\n4. Respond with JUST a JSON array of integers representing the 0-based indices of relevant memories\n5. If no memories are relevant, return an empty array []\n\nJSON Response:",
         query,
         formatted_memories
     );
@@ -78,7 +90,10 @@ pub async fn filter_relevant_memories(
             "parts": [{
                 "text": prompt
             }]
-        }]
+        }],
+        "generationConfig": {
+            "temperature": 0.1  // Use lower temperature for more deterministic results
+        }
     });
     
     let response = client
@@ -126,7 +141,9 @@ pub async fn filter_relevant_memories(
         // Return only the relevant memories
         let relevant_memories = indices.into_iter()
             .filter_map(|i| memories.get(i).cloned())
-            .collect();
+            .collect::<Vec<Value>>();
+        
+        log_debug(&format!("Selected {} relevant memories out of {}", relevant_memories.len(), memories.len()));
         
         return Ok(relevant_memories);
     }
@@ -143,20 +160,70 @@ pub async fn enhance_query(
         return original_query.to_string();
     }
     
-    // Format the memories for the model
+    // Format the memories for the model in a more structured way
     let formatted_memories = relevant_memories.iter()
         .filter_map(|m| {
             let key = m.get("key").and_then(|k| k.as_str())?;
             let value = m.get("value").and_then(|v| v.as_str())?;
-            Some(format!("- {} = {}", key, value))
+            let tags = m.get("tags")
+                .and_then(|t| t.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|tag| tag.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(", "))
+                .unwrap_or_else(|| "".to_string());
+            
+            Some(format!("• {} = {} [tags: {}]", key, value, tags))
         })
         .collect::<Vec<String>>()
         .join("\n");
     
-    // Create enhanced query with memory context
+    // Create enhanced query with memory context in a clearer format
     format!(
-        "I have some information stored in my memory that might be relevant to your query:\n\nRELEVANT MEMORIES:\n{}\n\nNow, responding to your query: {}",
+        "I have the following information from my memory that may be relevant to your query:\n\n```\n{}\n```\n\nBased on this context, I'll now answer your query: {}", 
         formatted_memories,
         original_query
     )
+}
+
+/// Deduplicates memories in the memory store by calling the deduplicate_memories tool
+pub async fn deduplicate_memories(mcp_host: &McpHost) -> Result<(usize, usize), Box<dyn Error>> {
+    // Check if memory server is available
+    let capabilities = mcp_host.get_all_capabilities().await;
+    
+    // Find memory server with deduplicate_memories tool
+    let memory_server = capabilities.tools.iter()
+        .find(|tool| tool.name.contains("/deduplicate_memories"))
+        .map(|tool| {
+            let parts: Vec<&str> = tool.name.split('/').collect();
+            (parts[0], parts[1])
+        });
+    
+    if let Some((server_name, tool_name)) = memory_server {
+        log_debug(&format!("Using memory server '{}' with tool '{}'", server_name, tool_name));
+        
+        // Call the deduplicate_memories tool
+        let response = mcp_host.execute_tool(
+            server_name,
+            tool_name,
+            json!({}),
+        ).await?;
+        
+        // Extract the result
+        let removed_count = response.get("removed_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        
+        let remaining_count = response.get("remaining_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        
+        log_debug(&format!("Deduplicated memories: removed {}, remaining {}", 
+                          removed_count, remaining_count));
+        
+        Ok((removed_count, remaining_count))
+    } else {
+        log_debug("No memory server with deduplicate_memories tool found");
+        Ok((0, 0))
+    }
 } 

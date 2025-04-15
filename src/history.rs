@@ -43,11 +43,42 @@ pub struct ChatHistory {
 
 /// Generate a session ID unique to the current terminal session
 pub fn generate_session_id() -> String {
-    // Try using process information to identify the terminal session
-    let mut session_components = Vec::new();
+    // First, try to get session ID from environment variable
+    // This allows for explicit session control and persistence across commands
+    if let Ok(session_id) = env::var("GEMINI_SESSION_ID") {
+        if !session_id.is_empty() {
+            return session_id;
+        }
+    }
     
-    // Try to get terminal session ID - we'll use the parent process ID
-    // as a proxy for terminal session (terminal's PID)
+    // Next, try to get a consistent terminal identifier
+    // Use TERM_SESSION_ID on macOS/iTerm
+    if let Ok(term_session) = env::var("TERM_SESSION_ID") {
+        if !term_session.is_empty() {
+            return format!("term_{}", term_session);
+        }
+    }
+    
+    // For Linux/other terminals, try using TTY
+    if let Ok(output) = Command::new("sh")
+        .arg("-c")
+        .arg("tty")
+        .output()
+    {
+        if let Ok(tty) = String::from_utf8(output.stdout) {
+            let tty = tty.trim();
+            if !tty.is_empty() && tty != "not a tty" {
+                // Normalize the TTY path to make it a valid filename component
+                let normalized = tty.replace("/", "_").replace(" ", "_");
+                return format!("tty_{}", normalized);
+            }
+        }
+    }
+    
+    // Try using shell info as fallback
+    let mut shell_info = String::new();
+    
+    // Try to get the shell's parent terminal PID
     if let Ok(output) = Command::new("sh")
         .arg("-c")
         .arg("ps -o ppid= -p $$")
@@ -56,32 +87,43 @@ pub fn generate_session_id() -> String {
         if let Ok(ppid) = String::from_utf8(output.stdout) {
             let ppid = ppid.trim();
             if !ppid.is_empty() {
-                session_components.push(format!("term_{}", ppid));
+                shell_info.push_str(&format!("term_{}", ppid));
             }
         }
     }
     
-    // Add the shell's PID as another component
-    if let Ok(output) = Command::new("sh").arg("-c").arg("echo $$").output() {
-        if let Ok(pid) = String::from_utf8(output.stdout) {
-            let pid = pid.trim();
-            if !pid.is_empty() {
-                session_components.push(format!("sh_{}", pid));
-            }
+    // Add shell environment variables that should be consistent in a terminal session
+    if let Ok(shlvl) = env::var("SHLVL") {
+        if !shell_info.is_empty() {
+            shell_info.push('_');
         }
+        shell_info.push_str(&format!("lvl_{}", shlvl));
     }
     
-    // Join all components
-    if session_components.is_empty() {
-        // Fallback to just timestamp if we couldn't get process info
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        format!("session_{}", timestamp)
-    } else {
-        session_components.join("_")
+    // Use the USER environment variable for additional stability
+    if let Ok(user) = env::var("USER") {
+        if !shell_info.is_empty() {
+            shell_info.push('_');
+        }
+        shell_info.push_str(&format!("usr_{}", user));
     }
+    
+    // If we've gathered some shell info, use it
+    if !shell_info.is_empty() {
+        return shell_info;
+    }
+    
+    // Ultimate fallback: use a stable identifier based on the day
+    // This at least keeps conversations together within the same day
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    
+    // Convert to day-based timestamp (seconds / (seconds per day))
+    // 86400 = 60 * 60 * 24 = seconds in a day
+    let day_timestamp = now / 86400;
+    format!("day_{}", day_timestamp)
 }
 
 /// Get the path for a session's history file

@@ -116,13 +116,19 @@ You can manage the configuration using these flags:
 By default, Gemini CLI will access your last 5 terminal commands to provide context to the AI. This helps Gemini provide more relevant responses, especially for command-related queries.
 
 **Chat History:**
-Gemini CLI maintains conversation history within a terminal session using memory only via environment variables. This allows for back-and-forth conversations.
+Gemini CLI maintains conversation history within a terminal session using files in your config directory. This allows for back-and-forth conversations.
 
-The **`gemini` command is actually a shell function** that wraps the underlying binary (`gemini-cli-bin`). This function automatically handles the environment variables needed to maintain history across multiple calls within the same shell session.
+The **`gemini` command uses the terminal session information** to identify conversations, but since each command runs in a separate process, you need to export a session ID variable to maintain history across multiple commands:
 
-*   To start a new conversation: `gemini --new-chat "Hello"`
-*   To disable conversation history: `gemini --disable-history`
-*   To enable conversation history: `gemini --enable-history`
+* To maintain history across separate commands, run the export command shown after your first interaction:
+  ```bash
+  export GEMINI_SESSION_ID="your_generated_session_id"
+  ```
+  This ID will be shown when you run Gemini with DEBUG mode or when a default session ID is used.
+
+* To start a new conversation: `gemini --new-chat "Hello"`
+* To disable conversation history: `gemini --disable-history`
+* To enable conversation history: `gemini --enable-history`
 
 **Automatic History Summarization:**
 When a conversation gets too long (exceeding 700,000 estimated tokens), Gemini CLI will automatically summarize the conversation to reduce token usage while preserving the key context and information. This ensures that:
@@ -159,6 +165,8 @@ The memory broker enhances your queries by retrieving relevant information from 
 - **Automatic Relevance Filtering**: Only memories relevant to your current query are included
 - **Seamless Integration**: Relevant memories are provided as context to the model without changing your prompt
 - **Customizable Model**: Control which model is used for relevance filtering
+- **Memory Deduplication**: Automatically detects and removes duplicate memories to keep the memory store clean
+- **Improved Context Integration**: Better formatting of memory context for more natural responses
 
 To control the memory broker:
 - Enable memory broker: `gemini --enable-memory-broker`
@@ -172,19 +180,49 @@ The auto memory feature automatically extracts and stores important information 
 - **Key Information Extraction**: Identifies facts, preferences, and details worth remembering
 - **Contextual Storage**: Automatically categorizes information with relevant tags
 - **Smart Filtering**: Only stores truly important information, not casual conversation
+- **Duplicate Prevention**: Avoids creating duplicate entries for the same information
+- **Tag Merging**: Intelligently merges tags when updating existing memories
 
 To control the auto memory feature:
 - Enable auto memory: `gemini --enable-auto-memory`
 - Disable auto memory: `gemini --disable-auto-memory`
 - Check status: `gemini --show-config`
 
+### Deduplication Tool
+
+The memory system now includes a dedicated deduplication tool that:
+
+- Removes redundant memories while keeping the most recent version
+- Maintains a clean and efficient memory store
+- Runs automatically on startup and periodically during usage
+- Can be triggered manually when needed
+
+The memory system intelligently manages duplicates by:
+1. Checking for exact key/value matches before storing
+2. Updating existing entries instead of creating duplicates
+3. Merging tags from multiple entries to preserve all context
+4. Periodically cleaning up the memory store
+
 ### How It Works
 
-1. **When you ask a question**: The memory broker retrieves all memories, filters for relevance, and enhances your query with relevant information
-2. **When you get a response**: The auto memory system extracts key information and stores it for future reference
-3. **On future queries**: Relevant memories are automatically included to provide continuity and context
+1. **When you ask a question**: 
+   - The memory broker retrieves all memories from the store
+   - Periodically deduplicates the memory store to prevent clutter
+   - Filters memories for relevance to your query using a specialized model
+   - Enhances your query with properly formatted relevant information
 
-This creates a system that gets more useful over time as it builds a personal knowledge base tailored to your interactions.
+2. **When you get a response**: 
+   - The auto memory system extracts key information
+   - Checks if similar information already exists
+   - Updates existing entries or creates new ones as appropriate
+   - Tags the information with relevant categories for future retrieval
+
+3. **On future queries**: 
+   - Relevant memories are automatically included to provide continuity
+   - The system becomes more useful over time as it builds a personal knowledge base
+   - Duplicate information is consolidated to maintain a clean memory store
+
+This creates a system that gets more useful over time while remaining efficient and focused on the most relevant information for your needs.
 
 ## MCP Integration
 
