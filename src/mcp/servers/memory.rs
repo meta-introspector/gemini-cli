@@ -149,9 +149,10 @@ fn save_memory_store(store: &MemoryStore) -> Result<(), String> {
     }
 }
 
-
 /// Run the application as a memory MCP server
 pub async fn run() -> Result<(), Box<dyn Error>> {
+    println!("Starting memory MCP server...");
+
     // Load memory store
     let memory_store = Arc::new(Mutex::new(match load_memory_store() {
         Ok(store) => store,
@@ -284,6 +285,20 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                     "required": ["key"]
                                                 })),
                                             },
+                                            Tool {
+                                                name: "get_relevant_memories".to_string(),
+                                                description: Some("Get memories relevant to a query".to_string()),
+                                                parameters: Some(json!({
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "query": {
+                                                            "type": "string",
+                                                            "description": "Query to find relevant memories for"
+                                                        }
+                                                    },
+                                                    "required": ["query"]
+                                                })),
+                                            },
                                         ];
                                         
                                         // Define resources
@@ -320,9 +335,10 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                     "mcp/tool/execute" => {
                                         // Handle tool execution request
                                         if let Some(params) = request.params {
-                                            let tool_name = params.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+                                            // Expected params format: {name: string, args: object}
+                                            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                                             // Store arguments in a variable to avoid temporary value being dropped
-                                            let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+                                            let arguments = params.get("args").cloned().unwrap_or(json!({}));
                                             
                                             eprintln!("Executing memory tool: '{}' with args: {:?}", tool_name, arguments);
                                             
@@ -415,7 +431,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                 "retrieve_by_tag" => {
                                                     let tag = arguments.get("tag").and_then(|v| v.as_str()).unwrap_or("");
                                                     
-                                                    // Retrieve memories by tag
+                                                    // Retrieve by tag
                                                     let result = {
                                                         let store = memory_store.lock().unwrap();
                                                         let memories = store.get_by_tag(tag);
@@ -474,14 +490,14 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                     // Delete memory
                                                     let result = {
                                                         let mut store = memory_store.lock().unwrap();
-                                                        let count = store.delete_by_key(key);
+                                                        let deleted_count = store.delete_by_key(key);
                                                         
                                                         // Save updated store
                                                         match save_memory_store(&store) {
                                                             Ok(_) => json!({
                                                                 "success": true,
-                                                                "deleted_count": count,
-                                                                "message": format!("Deleted {} memories with key '{}'", count, key)
+                                                                "deleted_count": deleted_count,
+                                                                "message": format!("Deleted {} memories with key '{}'", deleted_count, key)
                                                             }),
                                                             Err(e) => json!({
                                                                 "success": false,
@@ -506,11 +522,47 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                     stdout.write_all(response_json.as_bytes()).unwrap();
                                                     stdout.flush().unwrap();
                                                 },
+                                                "get_relevant_memories" => {
+                                                    let query = arguments.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                                                    
+                                                    // Get all memories for now (we would implement actual relevance search in a real implementation)
+                                                    let result = {
+                                                        let store = memory_store.lock().unwrap();
+                                                        let memories = store.get_all_memories();
+                                                        // Simple filtering based on query for demonstration
+                                                        let filtered_memories = memories.into_iter()
+                                                            .filter(|m| m.value.to_lowercase().contains(&query.to_lowercase()) || 
+                                                                   m.key.to_lowercase().contains(&query.to_lowercase()))
+                                                            .collect::<Vec<_>>();
+                                                        
+                                                        json!({
+                                                            "success": true,
+                                                            "query": query,
+                                                            "memories": filtered_memories
+                                                        })
+                                                    };
+                                                    
+                                                    // Send response
+                                                    let response = Response {
+                                                        jsonrpc: "2.0".to_string(),
+                                                        id: request.id.unwrap_or(json!(null)),
+                                                        result: Some(result),
+                                                        error: None,
+                                                    };
+                                                    
+                                                    let response_json = serde_json::to_string(&response).unwrap();
+                                                    
+                                                    // Send with correct headers
+                                                    let header = format!("Content-Length: {}\r\n\r\n", response_json.len());
+                                                    stdout.write_all(header.as_bytes()).unwrap();
+                                                    stdout.write_all(response_json.as_bytes()).unwrap();
+                                                    stdout.flush().unwrap();
+                                                },
                                                 _ => {
                                                     // Unknown tool
                                                     let error = JsonRpcError {
                                                         code: -32601,
-                                                        message: format!("Unknown tool: {}", tool_name),
+                                                        message: format!("Tool '{}' not found", tool_name),
                                                         data: None,
                                                     };
                                                     
@@ -530,6 +582,28 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                     stdout.flush().unwrap();
                                                 }
                                             }
+                                        } else {
+                                            // Missing parameters
+                                            let error = JsonRpcError {
+                                                code: -32602,
+                                                message: "Missing parameters for tool execution".to_string(),
+                                                data: None,
+                                            };
+                                            
+                                            let response = Response {
+                                                jsonrpc: "2.0".to_string(),
+                                                id: request.id.unwrap_or(json!(null)),
+                                                result: None,
+                                                error: Some(error),
+                                            };
+                                            
+                                            let response_json = serde_json::to_string(&response).unwrap();
+                                            
+                                            // Send with correct headers
+                                            let header = format!("Content-Length: {}\r\n\r\n", response_json.len());
+                                            stdout.write_all(header.as_bytes()).unwrap();
+                                            stdout.write_all(response_json.as_bytes()).unwrap();
+                                            stdout.flush().unwrap();
                                         }
                                     },
                                     "mcp/resource/get" => {
@@ -544,8 +618,12 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                         let store = memory_store.lock().unwrap();
                                                         json!({
                                                             "success": true,
-                                                            "count": store.memories.len(),
-                                                            "store_path": get_memory_store_path().to_string_lossy().to_string()
+                                                            "total_memories": store.memories.len(),
+                                                            "unique_keys": store.memories.iter()
+                                                                .map(|m| &m.key)
+                                                                .collect::<std::collections::HashSet<_>>()
+                                                                .len(),
+                                                            "store_path": get_memory_store_path().to_string_lossy()
                                                         })
                                                     };
                                                     
@@ -570,31 +648,29 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                     let result = json!({
                                                         "success": true,
                                                         "schema": {
-                                                            "Memory": {
-                                                                "type": "object",
-                                                                "properties": {
-                                                                    "key": {
-                                                                        "type": "string",
-                                                                        "description": "Unique identifier for the memory"
-                                                                    },
-                                                                    "value": {
-                                                                        "type": "string",
-                                                                        "description": "Content of the memory"
-                                                                    },
-                                                                    "timestamp": {
-                                                                        "type": "integer",
-                                                                        "description": "Unix timestamp when the memory was created"
-                                                                    },
-                                                                    "tags": {
-                                                                        "type": "array",
-                                                                        "items": {
-                                                                            "type": "string"
-                                                                        },
-                                                                        "description": "Tags to categorize the memory"
-                                                                    }
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "key": {
+                                                                    "type": "string",
+                                                                    "description": "Unique identifier for the memory"
                                                                 },
-                                                                "required": ["key", "value", "timestamp"]
-                                                            }
+                                                                "value": {
+                                                                    "type": "string",
+                                                                    "description": "Content of the memory"
+                                                                },
+                                                                "timestamp": {
+                                                                    "type": "integer",
+                                                                    "description": "Unix timestamp when the memory was created"
+                                                                },
+                                                                "tags": {
+                                                                    "type": "array",
+                                                                    "items": {
+                                                                        "type": "string"
+                                                                    },
+                                                                    "description": "Tags to categorize the memory"
+                                                                }
+                                                            },
+                                                            "required": ["key", "value", "timestamp"]
                                                         }
                                                     });
                                                     
@@ -618,7 +694,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                     // Unknown resource
                                                     let error = JsonRpcError {
                                                         code: -32601,
-                                                        message: format!("Unknown resource: {}", resource_name),
+                                                        message: format!("Resource '{}' not found", resource_name),
                                                         data: None,
                                                     };
                                                     
@@ -638,13 +714,35 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                     stdout.flush().unwrap();
                                                 }
                                             }
+                                        } else {
+                                            // Missing parameters
+                                            let error = JsonRpcError {
+                                                code: -32602,
+                                                message: "Missing parameters for resource request".to_string(),
+                                                data: None,
+                                            };
+                                            
+                                            let response = Response {
+                                                jsonrpc: "2.0".to_string(),
+                                                id: request.id.unwrap_or(json!(null)),
+                                                result: None,
+                                                error: Some(error),
+                                            };
+                                            
+                                            let response_json = serde_json::to_string(&response).unwrap();
+                                            
+                                            // Send with correct headers
+                                            let header = format!("Content-Length: {}\r\n\r\n", response_json.len());
+                                            stdout.write_all(header.as_bytes()).unwrap();
+                                            stdout.write_all(response_json.as_bytes()).unwrap();
+                                            stdout.flush().unwrap();
                                         }
                                     },
                                     _ => {
                                         // Unknown method
                                         let error = JsonRpcError {
                                             code: -32601,
-                                            message: format!("Method not found: {}", request.method),
+                                            message: format!("Method '{}' not found", request.method),
                                             data: None,
                                         };
                                         
@@ -666,9 +764,9 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             },
                             Err(e) => {
-                                eprintln!("Error parsing request: {}", e);
+                                eprintln!("Failed to parse JSON-RPC request: {}", e);
                                 
-                                // Send error response
+                                // Send parse error
                                 let error = JsonRpcError {
                                     code: -32700,
                                     message: format!("Parse error: {}", e),
@@ -698,7 +796,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read line: {}", e);
+                eprintln!("Error reading from stdin: {}", e);
                 break;
             }
         }
