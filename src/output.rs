@@ -62,8 +62,19 @@ pub fn handle_command_confirmation(potential_command: &str) -> Result<(), Box<dy
 
 /// Show usage instructions when no prompt or action is provided
 pub fn print_usage_instructions() {
-    println!("{}", "No prompt provided. Use 'gemini \"your prompt\"' to query Gemini.".yellow());
-    println!("{}", "Use --set-api-key, --set-system-prompt, or --show-config for configuration.".cyan());
+    println!("{}", "No prompt provided. Here are your options:".yellow());
+    println!("  {}", "gemini \"your prompt\"".green().bold());
+    println!("    Ask Gemini a single question or give it a task");
+    println!();
+    println!("  {}", "gemini -i".green().bold());
+    println!("    Start an interactive chat session with Gemini");
+    println!();
+    println!("  {}", "gemini -t \"your task description\"".green().bold());
+    println!("    Start a task loop where Gemini works on a specific task until completion");
+    println!();
+    println!("{}", "Configuration options:".cyan());
+    println!("  {}", "--set-api-key, --set-system-prompt, --show-config");
+    println!();
     println!("{}", "Use --help for more options.".cyan());
 }
 

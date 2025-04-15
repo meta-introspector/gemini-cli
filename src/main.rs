@@ -129,7 +129,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     
-    if let Some(prompt) = args.prompt.clone() {
+    // Check for interactive mode
+    if args.interactive {
+        if let Err(e) = crate::app::run_interactive_chat(
+            &args,
+            &config,
+            &client,
+            &mcp_host,
+            &api_key,
+            &system_prompt,
+            &config_dir,
+            &session_id,
+            should_save_history,
+        ).await {
+            eprintln!("Error in interactive chat: {}", e);
+        }
+    } 
+    // Check for task loop mode
+    else if let Some(task) = &args.task {
+        if let Err(e) = crate::app::run_task_loop(
+            &args,
+            &config,
+            &client,
+            &mcp_host,
+            &api_key,
+            &system_prompt,
+            &config_dir,
+            &session_id,
+            should_save_history,
+            task,
+        ).await {
+            eprintln!("Error in task loop: {}", e);
+        }
+    }
+    // Single prompt mode
+    else if let Some(prompt) = args.prompt.clone() {
         // Call the main processing logic from the app module
         if let Err(e) = crate::app::process_prompt(
             &args,

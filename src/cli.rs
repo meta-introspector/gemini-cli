@@ -12,6 +12,14 @@ pub struct Args {
     #[arg(short, long, default_value_t = false)]
     pub command_help: bool,
 
+    /// Enter interactive chat mode with continuous conversation
+    #[arg(short, long, default_value_t = false)]
+    pub interactive: bool,
+
+    /// Start a task loop with the given description, allowing the AI to work on a task autonomously
+    #[arg(short, long)]
+    pub task: Option<String>,
+
     /// Set and save the Gemini API Key persistently
     #[arg(long)]
     pub set_api_key: Option<String>,
