@@ -4,11 +4,7 @@ use reqwest::Client;
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use colored::*;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::io::Write;
-use serde_json::json;
 
 mod cli;
 mod config;
@@ -24,19 +20,11 @@ mod auto_memory;
 use crate::cli::Args;
 use crate::config::{get_config_dir, get_config_file_path, 
                    load_config, handle_config_flags};
-use crate::history::{
-    ChatHistory, ChatMessage, roles,
-    load_chat_history, save_chat_history,
-    start_new_chat, generate_session_id,
-    create_system_prompt_with_history,
-    estimate_total_tokens, summarize_conversation,
-};
-use crate::logging::{log_debug, log_error, log_info, log_warning};
+use crate::history::generate_session_id;
+use crate::logging::{log_error, log_info};
 use crate::mcp::config::load_mcp_servers;
 use crate::mcp::host::McpHost;
-use crate::mcp::gemini::{build_mcp_system_prompt, generate_gemini_function_declarations, process_function_call};
-use crate::model::{call_gemini_api, send_function_response};
-use crate::output::{print_gemini_response, handle_command_confirmation, print_usage_instructions};
+use crate::output::print_usage_instructions;
 
 /// Main function - handle command line args and talk to Gemini API
 #[tokio::main]

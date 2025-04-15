@@ -1,6 +1,5 @@
 use std::io::{self, BufRead, Read, Write};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::process;
 use std::error::Error;
 use dirs; // Added for home_directory resource

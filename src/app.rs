@@ -20,7 +20,6 @@ use crate::auto_memory;
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
-use serde_json::Value;
 use std::env;
 use std::error::Error;
 use std::path::Path;
