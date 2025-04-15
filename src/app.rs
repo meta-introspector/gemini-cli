@@ -14,6 +14,8 @@ use crate::mcp::host::McpHost;
 use crate::mcp::gemini::{build_mcp_system_prompt, generate_gemini_function_declarations, process_function_call};
 use crate::model::{call_gemini_api, send_function_response};
 use crate::output::{print_gemini_response, handle_command_confirmation};
+use crate::memory_broker;
+use crate::auto_memory;
 
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -83,8 +85,37 @@ pub async fn process_prompt(
         prompt.to_string()
     };
     
-    // Enhance query with relevant memories
-    let enhanced_prompt = enhance_query_with_memories(&formatted_prompt, &api_key, mcp_host).await?;
+    // Enhance query with relevant memories if memory broker is enabled
+    let enhanced_prompt = if config.enable_memory_broker.unwrap_or(true) && mcp_host.is_some() {
+        log_debug("Memory broker is enabled, enhancing query with relevant memories");
+        let memories = memory_broker::retrieve_all_memories(mcp_host.as_ref().unwrap()).await?;
+        
+        if !memories.is_empty() {
+            log_debug(&format!("Retrieved {} memories from store", memories.len()));
+            // Filter memories by relevance
+            let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
+            let relevant_memories = memory_broker::filter_relevant_memories(
+                &formatted_prompt, 
+                memories, 
+                api_key,
+                model
+            ).await?;
+            
+            if !relevant_memories.is_empty() {
+                log_debug(&format!("Found {} relevant memories for query", relevant_memories.len()));
+                // Enhance query with relevant memories
+                memory_broker::enhance_query(&formatted_prompt, relevant_memories).await
+            } else {
+                log_debug("No relevant memories found for query");
+                formatted_prompt
+            }
+        } else {
+            log_debug("No memories found in store");
+            formatted_prompt
+        }
+    } else {
+        formatted_prompt
+    };
     
     // Call Gemini API
     let spinner = ProgressBar::new_spinner();
@@ -128,6 +159,35 @@ pub async fn process_prompt(
                     .as_secs(),
             };
             chat_history.messages.push(assistant_message);
+            
+            // Store memory from response if auto memory is enabled
+            if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() {
+                log_debug("Auto memory is enabled, extracting key information");
+                if let Some(api_key_str) = &config.api_key {
+                    let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
+                    
+                    // Extract key information from the conversation
+                    match auto_memory::extract_key_information(
+                        &enhanced_prompt, 
+                        &response, 
+                        api_key_str,
+                        model
+                    ).await {
+                        Ok(memories) => {
+                            if !memories.is_empty() {
+                                log_debug(&format!("Extracted {} key memories from conversation", memories.len()));
+                                // Store memories
+                                if let Err(e) = auto_memory::store_memories(memories, mcp_host.as_ref().unwrap()).await {
+                                    log_error(&format!("Failed to store memories: {}", e));
+                                }
+                            } else {
+                                log_debug("No key information found to store as memories");
+                            }
+                        },
+                        Err(e) => log_error(&format!("Failed to extract memories: {}", e))
+                    }
+                }
+            }
             
             // Process any function calls
             for function_call in &function_calls {
@@ -200,10 +260,31 @@ pub async fn process_prompt(
                                     }
                                     
                                     // Store memories from the function call response
-                                    if let Some(api_key_str) = &config.api_key {
-                                        match store_memory_from_response(&enhanced_prompt, &final_response, mcp_host, api_key_str).await {
-                                            Ok(_) => log_debug("Processed function response for memories"),
-                                            Err(e) => log_error(&format!("Failed to process function response for memories: {}", e)),
+                                    if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() {
+                                        log_debug("Auto memory is enabled, extracting key information from function response");
+                                        if let Some(api_key_str) = &config.api_key {
+                                            let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
+                                            
+                                            // Extract key information from the conversation
+                                            match auto_memory::extract_key_information(
+                                                &enhanced_prompt, 
+                                                &final_response, 
+                                                api_key_str,
+                                                model
+                                            ).await {
+                                                Ok(memories) => {
+                                                    if !memories.is_empty() {
+                                                        log_debug(&format!("Extracted {} key memories from function response", memories.len()));
+                                                        // Store memories
+                                                        if let Err(e) = auto_memory::store_memories(memories, mcp_host.as_ref().unwrap()).await {
+                                                            log_error(&format!("Failed to store memories from function response: {}", e));
+                                                        }
+                                                    } else {
+                                                        log_debug("No key information found in function response");
+                                                    }
+                                                },
+                                                Err(e) => log_error(&format!("Failed to extract memories from function response: {}", e))
+                                            }
                                         }
                                     }
                                 },
@@ -272,10 +353,31 @@ pub async fn process_prompt(
                 }
                 
                 // Store memories from the conversation
-                if let Some(api_key_str) = &config.api_key {
-                    match store_memory_from_response(&enhanced_prompt, &response, mcp_host, api_key_str).await {
-                        Ok(_) => log_debug("Processed conversation for memories"),
-                        Err(e) => log_error(&format!("Failed to process conversation for memories: {}", e)),
+                if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() {
+                    log_debug("Auto memory is enabled, extracting key information");
+                    if let Some(api_key_str) = &config.api_key {
+                        let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
+                        
+                        // Extract key information from the conversation
+                        match auto_memory::extract_key_information(
+                            &enhanced_prompt, 
+                            &response, 
+                            api_key_str,
+                            model
+                        ).await {
+                            Ok(memories) => {
+                                if !memories.is_empty() {
+                                    log_debug(&format!("Extracted {} key memories from conversation", memories.len()));
+                                    // Store memories
+                                    if let Err(e) = auto_memory::store_memories(memories, mcp_host.as_ref().unwrap()).await {
+                                        log_error(&format!("Failed to store memories: {}", e));
+                                    }
+                                } else {
+                                    log_debug("No key information found to store as memories");
+                                }
+                            },
+                            Err(e) => log_error(&format!("Failed to extract memories: {}", e))
+                        }
                     }
                 }
             }
@@ -318,191 +420,3 @@ pub async fn process_prompt(
     }
     Ok(())
 }
-
-/// Enhance the user query with relevant memories before sending to the model
-async fn enhance_query_with_memories(
-    query: &str,
-    api_key: &str,
-    mcp_host: &Option<McpHost>,
-) -> Result<String, Box<dyn Error>> {
-    // If no MCP host is available, just return the original query
-    if mcp_host.is_none() {
-        return Ok(query.to_string());
-    }
-    
-    let host = mcp_host.as_ref().unwrap();
-    
-    // Check if memory server is available
-    let capabilities = host.get_all_capabilities().await;
-    let has_memory_server = capabilities.tools.iter().any(|tool| tool.name.starts_with("memory/"));
-    
-    if !has_memory_server {
-        return Ok(query.to_string());
-    }
-    
-    // Get relevant memories from the memory MCP server
-    let response = host.execute_tool(
-        "memory",
-        "get_relevant_memories",
-        serde_json::json!({
-            "query": query,
-            "api_key": api_key
-        }),
-    ).await;
-    
-    match response {
-        Ok(response) => {
-            // Check if we got memories
-            if let Some(memories) = response.get("memories").and_then(|m| m.as_array()) {
-                if memories.is_empty() {
-                    log_debug("No relevant memories found for query");
-                    return Ok(query.to_string());
-                }
-                
-                // Format the memories to enhance the query
-                let count = response.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
-                log_debug(&format!("Found {} relevant memories for query", count));
-                
-                // Format the memories for the model
-                let formatted_memories = memories.iter()
-                    .filter_map(|m| {
-                        let key = m.get("key").and_then(|k| k.as_str())?;
-                        let value = m.get("value").and_then(|v| v.as_str())?;
-                        Some(format!("- {} = {}", key, value))
-                    })
-                    .collect::<Vec<String>>()
-                    .join("\n");
-                
-                // Create enhanced query with memory context
-                let enhanced_query = format!(
-                    "I have some information stored in my memory that might be relevant to your query:\n\nRELEVANT MEMORIES:\n{}\n\nNow, responding to your query: {}",
-                    formatted_memories,
-                    query
-                );
-                
-                return Ok(enhanced_query);
-            }
-            
-            // If no memories or couldn't parse them, return original query
-            Ok(query.to_string())
-        },
-        Err(e) => {
-            log_error(&format!("Error retrieving memories: {}", e));
-            Ok(query.to_string())
-        }
-    }
-}
-
-/// Store important information from assistant's response as memories
-async fn store_memory_from_response(
-    user_query: &str,
-    assistant_response: &str,
-    mcp_host: &Option<McpHost>,
-    api_key: &str,
-) -> Result<(), Box<dyn Error>> {
-    // If no MCP host is available, just return
-    if mcp_host.is_none() {
-        return Ok(());
-    }
-    
-    let host = mcp_host.as_ref().unwrap();
-    
-    // Check if memory server is available
-    let capabilities = host.get_all_capabilities().await;
-    let has_memory_server = capabilities.tools.iter().any(|tool| tool.name.starts_with("memory/"));
-    
-    if !has_memory_server {
-        return Ok(());
-    }
-    
-    // First, parse the content for potential memory-worthy information
-    // We'll ask Gemini-2.0-flash to extract key information
-    let client = reqwest::Client::new();
-    let url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
-    
-    let extraction_prompt = format!(
-        "Extract key pieces of information from this conversation that would be valuable to remember for future interactions.\n        \n        USER QUERY:\n        \"{}\"\n        \n        ASSISTANT RESPONSE:\n        \"{}\"\n        \n        For each piece of key information, return a JSON object with these properties:\n        - key: A brief, descriptive identifier for this information (e.g., 'project_deadline', 'user_preference_theme')\n        - value: The specific information to remember\n        - tags: An array of 1-3 categorical tags (e.g., ['project', 'timeline'], ['preference', 'ui'])\n        \n        Return these as a JSON array of objects. If no key information is found, return an empty array.\n        Only extract truly important/reusable information. Focus on facts, preferences, project details.\n        \n        Return ONLY valid JSON, no other text.",
-        user_query,
-        assistant_response
-    );
-    
-    let request_body = serde_json::json!({
-        "contents": [{
-            "role": "user",
-            "parts": [{
-                "text": extraction_prompt
-            }]
-        }]
-    });
-    
-    let response = client
-        .post(&format!("{}?key={}", url, api_key))
-        .json(&request_body)
-        .send()
-        .await?;
-    
-    if !response.status().is_success() {
-        let error_text = response.text().await?;
-        log_error(&format!("Failed to extract memories: {}", error_text));
-        return Ok(()); // Continue without storing memories
-    }
-    
-    let response_json: Value = response.json().await?;
-    
-    // Extract the generated content
-    if let Some(text) = response_json["candidates"][0]["content"]["parts"][0]["text"].as_str() {
-        // Parse the JSON response
-        let memories: Vec<Value> = match serde_json::from_str(text) {
-            Ok(memories) => memories,
-            Err(e) => {
-                // Try to extract JSON if there's surrounding text
-                if let Some(start) = text.find('[') {
-                    if let Some(end) = text.rfind(']') {
-                        let json_str = &text[start..=end];
-                        match serde_json::from_str(json_str) {
-                            Ok(memories) => memories,
-                            Err(_) => {
-                                log_error(&format!("Failed to parse extracted memories: {}", e));
-                                return Ok(());
-                            }
-                        }
-                    } else {
-                        log_error(&format!("Failed to find JSON array end in response: {}", e));
-                        return Ok(());
-                    }
-                } else {
-                    log_error(&format!("Failed to find JSON array start in response: {}", e));
-                    return Ok(());
-                }
-            }
-        };
-        
-        // Store each memory using the memory MCP server
-        for memory in memories {
-            if let (Some(key), Some(value)) = (memory.get("key").and_then(|k| k.as_str()), 
-                                               memory.get("value").and_then(|v| v.as_str())) {
-                // Get tags if available
-                let tags = memory.get("tags").and_then(|t| t.as_array())
-                    .map(|arr| arr.iter()
-                        .filter_map(|tag| tag.as_str().map(String::from))
-                        .collect::<Vec<String>>())
-                    .unwrap_or_else(Vec::new);
-                
-                // Store the memory
-                let _ = host.execute_tool(
-                    "memory",
-                    "store_memory",
-                    serde_json::json!({
-                        "key": key,
-                        "value": value,
-                        "tags": tags
-                    }),
-                ).await;
-                
-                log_debug(&format!("Stored memory: {} = {}", key, value));
-            }
-        }
-    }
-    
-    Ok(())
-} 

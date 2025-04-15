@@ -27,6 +27,8 @@ pub struct McpHost {
 
 impl McpHost {
     pub async fn new(configs: Vec<McpServerConfig>) -> Result<Self, String> {
+        println!("Initializing MCP Host with {} server configs", configs.len());
+        
         let host = McpHost {
             servers: Arc::new(Mutex::new(HashMap::new())),
             next_request_id: Arc::new(AtomicU64::new(1)), // Start IDs from 1
@@ -36,6 +38,8 @@ impl McpHost {
         let mut servers_map = HashMap::new(); // Temp map to build servers before locking
 
         for config in configs {
+            println!("Starting MCP server '{}' with transport {:?}", config.name, config.transport);
+            
             if config.transport == McpTransport::Stdio {
                 match ActiveServer::launch_stdio(
                     &host.next_request_id, 
@@ -49,6 +53,7 @@ impl McpHost {
                             match init_future.await {
                                 Ok(Ok(_)) => {
                                     info!("MCP Server '{}' initialized successfully.", server_name);
+                                    println!("MCP Server '{}' initialized successfully.", server_name);
                                     Ok(server_name)
                                 }
                                 Ok(Err(rpc_error)) => {
@@ -56,6 +61,7 @@ impl McpHost {
                                         "MCP Server '{}' initialization failed: {:?}",
                                         server_name, rpc_error
                                     );
+                                    println!("MCP Server '{}' initialization failed: {:?}", server_name, rpc_error);
                                     Err(format!(
                                         "Server '{}' init failed",
                                         server_name
@@ -66,6 +72,7 @@ impl McpHost {
                                         "MCP Server '{}' initialization timed out: {}",
                                         server_name, timeout_error
                                     );
+                                    println!("MCP Server '{}' initialization timed out: {}", server_name, timeout_error);
                                     Err(format!(
                                         "Server '{}' init timed out",
                                         server_name
@@ -76,6 +83,7 @@ impl McpHost {
                     }
                     Err(e) => {
                         error!("Failed to launch MCP server '{}': {}", config.name, e);
+                        println!("Failed to launch MCP server '{}': {}", config.name, e);
                         // Optionally collect launch errors to return later
                     }
                 }
@@ -95,10 +103,12 @@ impl McpHost {
                 Ok(Ok(_server_name)) => { /* Server initialized ok */ }
                 Ok(Err(e)) => {
                     error!("Initialization error: {}", e);
+                    println!("Initialization error: {}", e);
                     failed_servers.push(e); // Collect errors
                 }
                 Err(join_error) => {
                     error!("Join error waiting for server init: {}", join_error);
+                    println!("Join error waiting for server init: {}", join_error);
                     failed_servers.push(format!("Join error: {}", join_error));
                 }
             }
@@ -110,8 +120,11 @@ impl McpHost {
                 "Some MCP servers failed to initialize: {:?}",
                 failed_servers
             );
+            println!("Some MCP servers failed to initialize: {:?}", failed_servers);
             // Decide if this should be a hard error for McpHost::new()
             // return Err(format!("Failed to initialize servers: {:?}", failed_servers));
+        } else {
+            println!("All MCP servers initialized successfully!");
         }
 
         Ok(host)

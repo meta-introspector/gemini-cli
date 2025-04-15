@@ -18,6 +18,8 @@ mod mcp;
 mod model;
 mod output;
 mod app;
+mod memory_broker;
+mod auto_memory;
 
 use crate::cli::Args;
 use crate::config::{get_config_dir, get_config_file_path, 
@@ -59,12 +61,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return crate::mcp::servers::command::run().await;
     }
 
-    // Check if running as memory MCP server
-    if args.memory_mcp {
-        // Run the memory MCP server implementation
-        logging::log_info("Starting memory MCP server...");
-        // return run_memory_mcp_server().await;
-        return crate::mcp::servers::memory::run().await;
+    // Check if running as memory store MCP server
+    if args.memory_store_mcp {
+        // Run the memory store MCP server implementation
+        logging::log_info("Starting memory store MCP server...");
+        return crate::mcp::servers::memory_store::run().await;
     }
 
     // Get the configuration directory

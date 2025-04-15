@@ -12,6 +12,9 @@ pub struct AppConfig {
     pub api_key: Option<String>,
     pub system_prompt: Option<String>,
     pub save_history: Option<bool>,
+    pub enable_memory_broker: Option<bool>,
+    pub enable_auto_memory: Option<bool>,
+    pub memory_broker_model: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -26,6 +29,9 @@ impl Default for AppConfig {
                 .to_string()
             ),
             save_history: Some(true),
+            enable_memory_broker: Some(true),
+            enable_auto_memory: Some(true),
+            memory_broker_model: Some("gemini-2.0-flash".to_string()),
         }
     }
 }
@@ -61,6 +67,7 @@ pub fn save_config(path: &Path, cfg: &AppConfig) -> Result<(), Box<dyn Error>> {
 pub fn handle_config_flags(args: &Args, cfg: &mut AppConfig, config_file_path: &Path) -> Result<bool, Box<dyn Error>> {
     let mut config_updated = false;
     let mut history_config_changed = false;
+    let mut memory_config_changed = false;
 
     // Handle history enable/disable first
     if args.enable_history {
@@ -77,7 +84,37 @@ pub fn handle_config_flags(args: &Args, cfg: &mut AppConfig, config_file_path: &
         }
     }
 
-    if history_config_changed {
+    // Handle memory broker enable/disable
+    if args.enable_memory_broker {
+        if cfg.enable_memory_broker != Some(true) {
+            cfg.enable_memory_broker = Some(true);
+            println!("{}", "Memory broker enabled.".green());
+            memory_config_changed = true;
+        }
+    } else if args.disable_memory_broker {
+        if cfg.enable_memory_broker != Some(false) {
+            cfg.enable_memory_broker = Some(false);
+            println!("{}", "Memory broker disabled.".yellow());
+            memory_config_changed = true;
+        }
+    }
+
+    // Handle auto memory enable/disable
+    if args.enable_auto_memory {
+        if cfg.enable_auto_memory != Some(true) {
+            cfg.enable_auto_memory = Some(true);
+            println!("{}", "Auto memory enabled.".green());
+            memory_config_changed = true;
+        }
+    } else if args.disable_auto_memory {
+        if cfg.enable_auto_memory != Some(false) {
+            cfg.enable_auto_memory = Some(false);
+            println!("{}", "Auto memory disabled.".yellow());
+            memory_config_changed = true;
+        }
+    }
+
+    if history_config_changed || memory_config_changed {
         save_config(config_file_path, cfg)?;
         // Don't exit yet, allow other flags to be processed
     }
@@ -99,12 +136,6 @@ pub fn handle_config_flags(args: &Args, cfg: &mut AppConfig, config_file_path: &
         }
     }
 
-    if config_updated {
-        save_config(config_file_path, cfg)?;
-        println!("{} {}", "Configuration saved to:".cyan(), config_file_path.display());
-        return Ok(true); // Exit after saving API key or system prompt
-    }
-
     // Handle showing config
     if args.show_config {
         println!("{} ({})", "Current Configuration".cyan().bold(), config_file_path.display());
@@ -118,10 +149,15 @@ pub fn handle_config_flags(args: &Args, cfg: &mut AppConfig, config_file_path: &
         println!("  {}: {}", "System Prompt".blue(), system_prompt_display);
         let save_history_display = if cfg.save_history.unwrap_or(true) { "Enabled".green() } else { "Disabled".yellow() };
         println!("  {}: {}", "Save History".blue(), save_history_display);
+        let memory_broker_display = if cfg.enable_memory_broker.unwrap_or(true) { "Enabled".green() } else { "Disabled".yellow() };
+        println!("  {}: {}", "Memory Broker".blue(), memory_broker_display);
+        let auto_memory_display = if cfg.enable_auto_memory.unwrap_or(true) { "Enabled".green() } else { "Disabled".yellow() };
+        println!("  {}: {}", "Auto Memory".blue(), auto_memory_display);
+        println!("  {}: {}", "Memory Broker Model".blue(), cfg.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash").bright_black());
         return Ok(true); // Exit after showing config
     }
 
     // Return false means continue execution (no exit needed based on config flags)
-    // Unless history config was the *only* thing changed, in which case we can exit
-    Ok(history_config_changed && !config_updated && !args.show_config)
+    // Unless history/memory config was the *only* thing changed, in which case we can exit
+    Ok((history_config_changed || memory_config_changed) && !config_updated && !args.show_config)
 } 

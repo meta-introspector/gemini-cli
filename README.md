@@ -148,6 +148,44 @@ GEMINI_DEBUG=1 gemini "your prompt"
 
 **Note:** The `dotenv` crate is still used, so a `.env` file in the **current working directory** (where you run `gemini`) or the **project root** (during development) can set the `GEMINI_API_KEY` environment variable if it's not set globally or in the config file.
 
+## Memory Features
+
+The Gemini CLI now supports advanced memory features that allow Gemini to remember and recall information across conversations:
+
+### Memory Broker
+
+The memory broker enhances your queries by retrieving relevant information from past interactions:
+
+- **Automatic Relevance Filtering**: Only memories relevant to your current query are included
+- **Seamless Integration**: Relevant memories are provided as context to the model without changing your prompt
+- **Customizable Model**: Control which model is used for relevance filtering
+
+To control the memory broker:
+- Enable memory broker: `gemini --enable-memory-broker`
+- Disable memory broker: `gemini --disable-memory-broker`
+- Check status: `gemini --show-config`
+
+### Auto Memory
+
+The auto memory feature automatically extracts and stores important information from conversations:
+
+- **Key Information Extraction**: Identifies facts, preferences, and details worth remembering
+- **Contextual Storage**: Automatically categorizes information with relevant tags
+- **Smart Filtering**: Only stores truly important information, not casual conversation
+
+To control the auto memory feature:
+- Enable auto memory: `gemini --enable-auto-memory`
+- Disable auto memory: `gemini --disable-auto-memory`
+- Check status: `gemini --show-config`
+
+### How It Works
+
+1. **When you ask a question**: The memory broker retrieves all memories, filters for relevance, and enhances your query with relevant information
+2. **When you get a response**: The auto memory system extracts key information and stores it for future reference
+3. **On future queries**: Relevant memories are automatically included to provide continuity and context
+
+This creates a system that gets more useful over time as it builds a personal knowledge base tailored to your interactions.
+
 ## MCP Integration
 
 The Gemini CLI now supports the Mission Control Protocol (MCP) for function calling and resource access. This allows Gemini to:

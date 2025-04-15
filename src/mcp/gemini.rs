@@ -72,7 +72,15 @@ pub fn convert_mcp_tools_to_gemini_functions(tools: &[Tool]) -> Vec<FunctionDef>
 
 /// Builds a system prompt with MCP capabilities
 pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String {
+    println!("Building MCP system prompt with {} tools and {} resources", tools.len(), resources.len());
+    
     let mut prompt = String::from("\n\nYou have access to the following tools and resources through a Machine Capability Protocol (MCP) interface. Use the function calling capability to interact with these tools; DO NOT suggest or describe function calls in your text response.\n\n");
+    
+    // Debug: Log all tool names to help with troubleshooting
+    println!("Available MCP tools:");
+    for tool in tools {
+        println!("  - {}", tool.name);
+    }
     
     // Add Tools Section
     if !tools.is_empty() {
@@ -99,6 +107,18 @@ pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String
             prompt.push_str(&format!("* **{}**: {}\n", resource.name, resource_desc));
         }
         prompt.push_str("\n");
+    }
+    
+    // Add specific instructions for common tools
+    if tools.iter().any(|tool| tool.name.contains("/store_memory") || tool.name.contains(".store_memory")) {
+        prompt.push_str("\n## Memory Storage\n\n");
+        prompt.push_str("You have access to a persistent memory storage system. When a user wants to store information for future reference, use the memory storage tools. You should explicitly tell the user when you've stored something in memory.\n\n");
+    }
+    
+    if tools.iter().any(|tool| tool.name.contains("/get_relevant_memories") || tool.name.contains(".get_relevant_memories") || 
+                          tool.name.contains("/retrieve_memory") || tool.name.contains(".retrieve_memory")) {
+        prompt.push_str("\n## Memory Retrieval\n\n");
+        prompt.push_str("You can retrieve information from your persistent memory. When a user asks about something you might have stored previously, you should check your memory.\n\n");
     }
     
     // Remove the old text-based instructions since we want structured function calls

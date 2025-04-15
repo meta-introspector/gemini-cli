@@ -36,6 +36,22 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub new_chat: bool,
 
+    /// Enable memory broker for enhancing queries with relevant memories (default)
+    #[arg(long, default_value_t = false)]
+    pub enable_memory_broker: bool,
+
+    /// Disable memory broker
+    #[arg(long, default_value_t = false)]
+    pub disable_memory_broker: bool,
+
+    /// Enable automatic memory storage for important information (default)
+    #[arg(long, default_value_t = false)]
+    pub enable_auto_memory: bool,
+
+    /// Disable automatic memory storage
+    #[arg(long, default_value_t = false)]
+    pub disable_auto_memory: bool,
+
     /// Run as a filesystem MCP server (internal use only)
     #[arg(long, default_value_t = false)]
     pub filesystem_mcp: bool,
@@ -43,8 +59,8 @@ pub struct Args {
     /// Run as a command execution MCP server (internal use only)
     #[arg(long, default_value_t = false)]
     pub command_mcp: bool,
-    
-    /// Run as a memory MCP server (internal use only)
+
+    /// Run as a memory store MCP server (internal use only)
     #[arg(long, default_value_t = false)]
-    pub memory_mcp: bool,
+    pub memory_store_mcp: bool,
 } 

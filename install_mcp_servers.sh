@@ -13,7 +13,6 @@ mkdir -p "$MCP_SERVERS_DIR"
 # Define paths
 FILESYSTEM_SERVER_DIR="$ROOT_DIR/src/mcp/servers/filesystem"
 COMMAND_SERVER_DIR="$ROOT_DIR/src/mcp/servers/command"
-MEMORY_SERVER_DIR="$ROOT_DIR/src/mcp/servers/memory"
 
 # Check if directories exist
 if [ ! -d "$FILESYSTEM_SERVER_DIR" ]; then
@@ -26,22 +25,9 @@ if [ ! -d "$COMMAND_SERVER_DIR" ]; then
     exit 1
 fi
 
-if [ ! -d "$MEMORY_SERVER_DIR" ]; then
-    echo "Error: Memory server directory not found at $MEMORY_SERVER_DIR"
-    exit 1
-fi
-
-# Build the memory MCP server
-echo "Building memory MCP server..."
-(cd "$MEMORY_SERVER_DIR" && cargo build --release)
-
 # Create a binary directory for installed binaries
 BINARY_DIR="$HOME/.local/bin"
 mkdir -p "$BINARY_DIR"
-
-# Copy the memory server binary
-echo "Installing memory MCP server binary..."
-cp "$ROOT_DIR/target/release/memory-mcp" "$BINARY_DIR/"
 
 # Create a simple wrapper script for the filesystem MCP
 echo "Creating filesystem-mcp wrapper script..."
@@ -95,13 +81,13 @@ EOF
 # Make the wrapper script executable
 chmod +x "$COMMAND_WRAPPER_SCRIPT"
 
-# Create a simple wrapper script for the memory MCP
-echo "Creating memory-mcp wrapper script..."
-MEMORY_WRAPPER_SCRIPT="$MCP_SERVERS_DIR/memory-mcp"
+# Create a simple wrapper script for the memory store MCP
+echo "Creating memory-store-mcp wrapper script..."
+MEMORY_STORE_WRAPPER_SCRIPT="$MCP_SERVERS_DIR/memory-store-mcp"
 
-cat > "$MEMORY_WRAPPER_SCRIPT" << 'EOF'
+cat > "$MEMORY_STORE_WRAPPER_SCRIPT" << 'EOF'
 #!/bin/bash
-# This is a wrapper script for the memory MCP server
+# This is a wrapper script for the memory store MCP server
 # It forwards calls to the gemini-cli binary
 
 # Get directory containing this script
@@ -114,12 +100,12 @@ if [ ! -f "$GEMINI_CLI" ]; then
     exit 1
 fi
 
-# Forward all input to the binary with the --memory-mcp flag
-exec "$GEMINI_CLI" --memory-mcp
+# Forward all input to the binary with the --memory-store-mcp flag
+exec "$GEMINI_CLI" --memory-store-mcp
 EOF
 
 # Make the wrapper script executable
-chmod +x "$MEMORY_WRAPPER_SCRIPT"
+chmod +x "$MEMORY_STORE_WRAPPER_SCRIPT"
 
 # Create or update the default MCP servers configuration
 MCP_CONFIG_DIR="$HOME/.config/gemini-cli"
@@ -149,10 +135,10 @@ cat > "$MCP_CONFIG_EXAMPLE" << 'EOF'
     "auto_execute": []
   },
   {
-    "name": "memory",
+    "name": "memory-store",
     "enabled": true,
     "transport": "stdio",
-    "command": ["~/.local/bin/mcp-servers/memory-mcp"],
+    "command": ["~/.local/bin/mcp-servers/memory-store-mcp"],
     "args": [],
     "auto_execute": []
   }
@@ -254,25 +240,25 @@ else
         fi
     fi
     
-    echo "Checking for memory MCP server in configuration..."
+    echo "Checking for memory-store MCP server in configuration..."
     
-    # Check if the memory server is already in the config
-    if ! grep -q '"name": *"memory"' "$MCP_CONFIG_FILE"; then
-        echo "Memory MCP server not found in configuration, adding it..."
+    # Check if the memory-store server is already in the config
+    if ! grep -q '"name": *"memory-store"' "$MCP_CONFIG_FILE"; then
+        echo "Memory-store MCP server not found in configuration, adding it..."
         
         # Create a temporary file with updated configuration
         TMP_CONFIG_FILE=$(mktemp)
         
-        # Use jq to add the memory server if jq is available
+        # Use jq to add the memory-store server if jq is available
         if command -v jq > /dev/null; then
             # Check if the config already has auto_execute fields
             if grep -q '"auto_execute"' "$MCP_CONFIG_FILE"; then
-                # Use jq to add the memory server config with auto_execute
-                jq '. += [{"name": "memory", "enabled": true, "transport": "stdio", "command": ["~/.local/bin/mcp-servers/memory-mcp"], "args": [], "auto_execute": []}]' \
+                # Use jq to add the memory-store server config with auto_execute
+                jq '. += [{"name": "memory-store", "enabled": true, "transport": "stdio", "command": ["~/.local/bin/mcp-servers/memory-store-mcp"], "args": [], "auto_execute": []}]' \
                    "$MCP_CONFIG_FILE" > "$TMP_CONFIG_FILE"
             else 
                 # Add without auto_execute to maintain backward compatibility
-                jq '. += [{"name": "memory", "enabled": true, "transport": "stdio", "command": ["~/.local/bin/mcp-servers/memory-mcp"], "args": []}]' \
+                jq '. += [{"name": "memory-store", "enabled": true, "transport": "stdio", "command": ["~/.local/bin/mcp-servers/memory-store-mcp"], "args": []}]' \
                    "$MCP_CONFIG_FILE" > "$TMP_CONFIG_FILE"
             fi
         else
@@ -289,10 +275,10 @@ else
                 # Add the comma and new entry
                 echo "  }," >> "$TMP_CONFIG_FILE"
                 echo "  {" >> "$TMP_CONFIG_FILE"
-                echo "    \"name\": \"memory\"," >> "$TMP_CONFIG_FILE"
+                echo "    \"name\": \"memory-store\"," >> "$TMP_CONFIG_FILE"
                 echo "    \"enabled\": true," >> "$TMP_CONFIG_FILE"
                 echo "    \"transport\": \"stdio\"," >> "$TMP_CONFIG_FILE"
-                echo "    \"command\": [\"~/.local/bin/mcp-servers/memory-mcp\"]," >> "$TMP_CONFIG_FILE"
+                echo "    \"command\": [\"~/.local/bin/mcp-servers/memory-store-mcp\"]," >> "$TMP_CONFIG_FILE"
                 echo "    \"args\": []," >> "$TMP_CONFIG_FILE"
                 
                 # Add auto_execute if the existing config uses it
@@ -303,7 +289,7 @@ else
                 echo "  }" >> "$TMP_CONFIG_FILE"
                 echo "]" >> "$TMP_CONFIG_FILE"
             else
-                echo "Cannot safely update config file without jq. Please install jq or manually add the memory server."
+                echo "Cannot safely update config file without jq. Please install jq or manually add the memory-store server."
                 echo "Example configuration updated at $MCP_CONFIG_EXAMPLE"
                 rm "$TMP_CONFIG_FILE"
                 # Continue without erroring out
@@ -313,10 +299,10 @@ else
         # If the temp file exists and has content, replace the original
         if [ -f "$TMP_CONFIG_FILE" ] && [ -s "$TMP_CONFIG_FILE" ]; then
             mv "$TMP_CONFIG_FILE" "$MCP_CONFIG_FILE"
-            echo "Updated MCP configuration to include memory server"
+            echo "Updated MCP configuration to include memory-store server"
         else
             rm -f "$TMP_CONFIG_FILE"
-            echo "Failed to add memory server to configuration"
+            echo "Failed to add memory-store server to configuration"
         fi
     fi
 fi
@@ -329,7 +315,7 @@ mkdir -p "$INSTALL_PATH"
 echo "Installing MCP servers to $INSTALL_PATH..."
 cp "$FILESYSTEM_WRAPPER_SCRIPT" "$INSTALL_PATH/"
 cp "$COMMAND_WRAPPER_SCRIPT" "$INSTALL_PATH/"
-cp "$MEMORY_WRAPPER_SCRIPT" "$INSTALL_PATH/"
+cp "$MEMORY_STORE_WRAPPER_SCRIPT" "$INSTALL_PATH/"
 
 echo "MCP servers installed successfully!"
 echo "Configuration at: $MCP_CONFIG_FILE" 

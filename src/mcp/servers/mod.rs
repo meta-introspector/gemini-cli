@@ -7,5 +7,6 @@
 // These are built and run separately, not imported as modules 
 
 pub mod filesystem; 
-pub mod memory; 
+// pub mod memory; // Removed old declaration
 pub mod command; 
+pub mod memory_store; // Added new declaration

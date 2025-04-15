@@ -23,14 +23,13 @@ log = "0.4"
 uuid = { version = "1.6", features = ["v4"] }
 futures = "0.3"
 lazy_static = "1.4"
+ctrlc = "3.4.6"
 
 [[bin]]
 name = "gemini-cli-bin"
 path = "src/main.rs"
 
-[[bin]]
-name = "memory-mcp"
-path = "src/mcp/servers/memory/main.rs"
+# The memory MCP server is used as a module, not as a separate binary
 
 # Add similar entries for filesystem and command servers if they were compiled separately
 # [[bin]]
