@@ -84,8 +84,17 @@ pub async fn process_prompt(
         prompt.to_string()
     };
     
-    // Enhance query with relevant memories if memory broker is enabled
-    let enhanced_prompt = if config.enable_memory_broker.unwrap_or(true) && mcp_host.is_some() {
+    // Check if this is a query that's likely targeting memory MCP tools directly
+    let is_memory_tool_query = prompt.to_lowercase().contains("memory") && 
+        (prompt.to_lowercase().contains("store") || 
+         prompt.to_lowercase().contains("list") || 
+         prompt.to_lowercase().contains("update") || 
+         prompt.to_lowercase().contains("delete") || 
+         prompt.to_lowercase().contains("retrieve") ||
+         prompt.to_lowercase().contains("deduplicate"));
+    
+    // Enhance query with relevant memories if memory broker is enabled and not directly using memory tools
+    let enhanced_prompt = if config.enable_memory_broker.unwrap_or(true) && mcp_host.is_some() && !is_memory_tool_query {
         log_debug("Memory broker is enabled, enhancing query with relevant memories");
         
         // First, deduplicate existing memories to maintain a clean memory store
@@ -130,6 +139,9 @@ pub async fn process_prompt(
             formatted_prompt
         }
     } else {
+        if config.enable_memory_broker.unwrap_or(true) && is_memory_tool_query {
+            log_debug("Memory broker is enabled but skipped because the query appears to directly target memory tools");
+        }
         formatted_prompt
     };
     
@@ -176,8 +188,12 @@ pub async fn process_prompt(
             };
             chat_history.messages.push(assistant_message);
             
+            // Check if any function calls contain memory-related operations
+            let using_memory_tools = function_calls.iter()
+                .any(|call| call.name.to_lowercase().contains("memory"));
+            
             // Store memory from response if auto memory is enabled
-            if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() {
+            if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() && !using_memory_tools {
                 log_debug("Auto memory is enabled, extracting key information");
                 if let Some(api_key_str) = &config.api_key {
                     let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
@@ -203,6 +219,8 @@ pub async fn process_prompt(
                         Err(e) => log_error(&format!("Failed to extract memories: {}", e))
                     }
                 }
+            } else if config.enable_auto_memory.unwrap_or(true) && using_memory_tools {
+                log_debug("Auto memory extraction skipped because the model is directly using memory tools");
             }
             
             // Process any function calls
@@ -276,8 +294,11 @@ pub async fn process_prompt(
                                         print_gemini_response(&final_response, false);
                                     }
                                     
+                                    // Check if this was a memory-related function call
+                                    let is_memory_function = function_call.name.to_lowercase().contains("memory");
+                                    
                                     // Store memories from the function call response
-                                    if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() {
+                                    if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() && !is_memory_function {
                                         log_debug("Auto memory is enabled, extracting key information from function response");
                                         if let Some(api_key_str) = &config.api_key {
                                             let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
@@ -303,6 +324,8 @@ pub async fn process_prompt(
                                                 Err(e) => log_error(&format!("Failed to extract memories from function response: {}", e))
                                             }
                                         }
+                                    } else if config.enable_auto_memory.unwrap_or(true) && is_memory_function {
+                                        log_debug("Auto memory extraction skipped because the model is directly using memory tools");
                                     }
                                 },
                                 Err(e) => {
@@ -370,7 +393,7 @@ pub async fn process_prompt(
                 }
                 
                 // Store memories from the conversation
-                if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() {
+                if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() && !using_memory_tools {
                     log_debug("Auto memory is enabled, extracting key information");
                     if let Some(api_key_str) = &config.api_key {
                         let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
@@ -396,6 +419,8 @@ pub async fn process_prompt(
                             Err(e) => log_error(&format!("Failed to extract memories: {}", e))
                         }
                     }
+                } else if config.enable_auto_memory.unwrap_or(true) && using_memory_tools {
+                    log_debug("Auto memory extraction skipped because the model is directly using memory tools");
                 }
             }
             

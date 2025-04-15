@@ -22,16 +22,19 @@ impl Default for AppConfig {
         Self {
             api_key: None,
             system_prompt: Some(
-                "You are a helpful assistant that lives in the command line interface. You are friendly, and a professional programmer and developer. \
-                You have access to the last few commands the user has run in their terminal. \
-                Use this context to provide more relevant answers. When asked about commands, \
-                provide concise and practical solutions focused on the user's needs."
+                "You are a helpful assistant that lives in the command line interface. You are friendly, professional, and an expert programmer and developer. \
+                You have access to the last few commands the user has run in their terminal and can use this context to provide more relevant answers. \
+                You benefit from an automatic memory system that remembers important information from past conversations and provides it to you when relevant. \
+                You can access filesystem tools and execute commands to help solve problems. \
+                When asked about commands, provide concise and practical solutions focused on the user's needs. \
+                For technical questions, offer specific examples that can be applied directly in the terminal. \
+                The memory system works in the background to maintain context across conversations without requiring manual recall."
                 .to_string()
             ),
             save_history: Some(true),
             enable_memory_broker: Some(true),
             enable_auto_memory: Some(true),
-            memory_broker_model: Some("gemini-2.0-flash".to_string()),
+            memory_broker_model: Some("gemini-1.5-flash-8b".to_string()),
         }
     }
 }
