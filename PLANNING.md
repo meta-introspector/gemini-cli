@@ -30,3 +30,34 @@ This plan outlines the steps to address remaining compilation errors after the i
 8.  **Fix `Display` Errors:** Use the debug format `{:?}` for `Option<u64>` values in `log::warn!` and `log::debug!` macros, or handle the `Option` explicitly.
 9.  **Fix `Send`/`Sync`/`Sized` Errors:** In `src/mcp/config.rs`, modify the error handling in `get_mcp_config_path` to ensure the returned error type (likely within the `io::Error::new` call) is `Send + Sync + 'static`. Using `Box<dyn Error + Send + Sync>` for the function's return type might be necessary if `confy`'s error isn't compatible.
 10. **Clean Up Warnings:** Address all remaining `unused_imports` and `unused_variables` warnings reported by `cargo build`. 
+
+## Task Loop Feature Implementation
+
+### Goal
+Allow the AI to persistently work on a user-defined task across multiple interactions, using available tools as needed.
+
+### Trigger 
+`gemini-cli -t "Task description"`
+
+### Mechanism
+1. The CLI application manages the loop state, but the AI controls the flow.
+2. The initial task is sent to the Gemini API with system instructions that define three explicit signals:
+   * `TASK_COMPLETE:` - Included in responses when the task is finished (can be at beginning or end)
+   * `TASK_STUCK:` - Included in responses when the AI cannot proceed (can be at beginning or end)
+   * `WAITING_FOR_USER_INPUT` - Appended to responses when user input is needed
+3. The CLI interprets Gemini's responses:
+   * If the response contains `TASK_COMPLETE:` or `TASK_STUCK:`, the loop terminates (with optional user confirmation).
+   * If the response ends with `WAITING_FOR_USER_INPUT`, the CLI pauses, prompts the user for input, and sends it back to Gemini.
+   * If the response contains a tool call, the CLI executes it (potentially with user confirmation) and sends the result back.
+   * Otherwise, the CLI displays the response and immediately continues the loop without user input.
+4. The loop continues until a termination signal is received or the user manually interrupts (e.g., Ctrl+C).
+
+### System Prompt Example
+```
+SYSTEM: You are operating in a task loop mode. Your objective is to complete the specified task.
+- If you need specific information from the user, ask your question clearly and end your response precisely with "WAITING_FOR_USER_INPUT".
+- Request tool usage when necessary. Available tools are [List dynamically inserted here].
+- When the task is fully completed, include "TASK_COMPLETE: " followed by a summary in your response. This can be at the beginning or end of your message.
+- If you cannot complete the task, include "TASK_STUCK: " followed by the reason in your response. This can be at the beginning or end of your message.
+- Otherwise, provide updates on your progress and continue working autonomously.
+``` 

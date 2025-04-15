@@ -768,8 +768,8 @@ pub async fn run_task_loop(
         "You are operating in a task loop mode. Your objective is to complete the specified task.\n\
         - If you need specific information from the user, ask your question clearly and end your response precisely with \"WAITING_FOR_USER_INPUT\".\n\
         - Request tool usage when necessary. Available tools are listed in your context.\n\
-        - When the task is fully completed, start your response PRECISELY with \"TASK_COMPLETE: \" followed by a summary.\n\
-        - If you cannot complete the task, start your response PRECISELY with \"TASK_STUCK: \" followed by the reason.\n\
+        - When the task is fully completed, include \"TASK_COMPLETE: \" followed by a summary in your response. This can be at the beginning or end of your message.\n\
+        - If you cannot complete the task, include \"TASK_STUCK: \" followed by the reason in your response. This can be at the beginning or end of your message.\n\
         - Otherwise, provide updates on your progress and continue working autonomously.\n\n\
         {}", system_prompt
     );
@@ -835,23 +835,35 @@ pub async fn run_task_loop(
                 };
                 chat_history.messages.push(assistant_message);
                 
-                // Check for task complete or stuck signal
-                if response.starts_with("TASK_COMPLETE: ") {
+                // Check for task complete or stuck signal (anywhere in the response)
+                if response.contains("TASK_COMPLETE:") {
                     println!("{} ", "✅ Task Complete:".green().bold());
-                    print_gemini_response(&response.replace("TASK_COMPLETE: ", ""), false);
+                    // If the signal is at the end, extract the completion message
+                    let completion_message = if let Some(idx) = response.find("TASK_COMPLETE:") {
+                        response[idx + "TASK_COMPLETE:".len()..].trim()
+                    } else {
+                        &response
+                    };
+                    print_gemini_response(completion_message, false);
                     println!();
                     task_complete = true;
                     continue;
-                } else if response.starts_with("TASK_STUCK: ") {
+                } else if response.contains("TASK_STUCK:") {
                     println!("{} ", "❌ Task Stuck:".red().bold());
-                    print_gemini_response(&response.replace("TASK_STUCK: ", ""), false);
+                    // If the signal is at the end, extract the stuck message
+                    let stuck_message = if let Some(idx) = response.find("TASK_STUCK:") {
+                        response[idx + "TASK_STUCK:".len()..].trim()
+                    } else {
+                        &response
+                    };
+                    print_gemini_response(stuck_message, false);
                     println!();
                     task_complete = true;
                     continue;
                 }
                 
                 // Check for waiting for user input
-                let needs_user_input = response.trim().ends_with("WAITING_FOR_USER_INPUT");
+                let needs_user_input = response.trim().contains("WAITING_FOR_USER_INPUT");
                 let display_response = if needs_user_input {
                     response.replace("WAITING_FOR_USER_INPUT", "")
                 } else {

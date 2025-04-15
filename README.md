@@ -8,6 +8,8 @@ A command-line interface (CLI) tool written in Rust to interact with Google Gemi
 *   View the last 5 commands from your shell history for better context.
 *   **In-memory conversation history** for continuous conversations in the same terminal session.
 *   **Automatic conversation summarization** when token count gets too large.
+*   **Interactive chat mode** (`-i`) for continuous conversation with the model.
+*   **Task Loop mode** (`-t`) for persistent task execution with AI-controlled flow.
 *   Persistent configuration for API Key and System Prompt.
 *   Configure API key via config file, environment variable, or command-line flag (for setting).
 *   Special flag (`-c`) to request Linux command help. **The CLI will propose a command and ask for your confirmation before executing it.**
@@ -404,6 +406,52 @@ Gemini can also access resources provided by MCP servers, such as:
 - Network status
 - And more, depending on the MCP server implementation
 
+## Interaction Modes
+
+Gemini CLI supports multiple ways to interact with the model:
+
+### Single Shot Mode
+
+This is the default mode, where you provide a single prompt and get a response:
+
+```bash
+gemini "How do I list all files in a directory, including hidden files?"
+```
+
+### Interactive Chat Mode
+
+For continuous back-and-forth conversation with Gemini, use the `-i` flag:
+
+```bash
+gemini -i
+```
+
+This starts an interactive session where you can chat with Gemini continuously without restarting the CLI. Type `exit` or `quit` to end the session, or press `Ctrl+C` to terminate immediately.
+
+### Task Loop Mode
+
+The Task Loop mode allows Gemini to work on a complex task autonomously, asking for input only when necessary:
+
+```bash
+gemini -t "Create a Python script that downloads weather data for London and displays it in a chart"
+```
+
+In Task Loop mode:
+
+- Gemini works autonomously on your task, showing progress updates
+- It uses available tools (like accessing files or running commands) as needed
+- It only asks for input when it needs specific information from you
+- It signals completion when the task is finished or when it gets stuck
+
+**Flow Control Signals:**
+- When Gemini needs your input, it will pause and wait for you to respond
+- When the task is complete, you'll see a "✅ Task Complete" message with a summary
+- If Gemini gets stuck, you'll see a "❌ Task Stuck" message with the reason
+
+You can exit the Task Loop at any time by typing `exit` or `quit` when prompted for input, or by pressing `Ctrl+C`.
+
+This mode is especially powerful for complex tasks that might require multiple steps, tool usage, or occasional user input.
+
 ## Usage
 
 ```bash
@@ -423,6 +471,12 @@ gemini --new-chat "How do I set up SSH keys?"
 # Using command help flag
 # This will ask Gemini for a command, display it, and prompt for confirmation before running.
 gemini -c "list files sorted by size"
+
+# Interactive chat mode
+gemini -i
+
+# Task loop mode
+gemini -t "Write a bash script to back up my Documents folder daily"
 
 # Manage history
 gemini --disable-history
