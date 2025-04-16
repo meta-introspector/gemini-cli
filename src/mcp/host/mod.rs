@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 use tokio::task;
 use serde_json::{self, json, Value};
 use log::{debug, error, info, warn};
+use futures_util::StreamExt;
 
 // Need Clone for task spawning
 #[derive(Debug, Clone)]
@@ -39,62 +40,151 @@ impl McpHost {
         let mut init_tasks = Vec::new();
         let mut servers_map = HashMap::new(); // Temp map to build servers before locking
 
-        for config in configs {
+        for config_orig in configs {
+            // Clone the config and immediately destructure it to avoid partial moves
+            let McpServerConfig {
+                name: server_name, 
+                enabled: _enabled, // Not directly used in this loop, but needed for destructuring
+                transport, 
+                command, 
+                args, 
+                env, 
+                auto_execute 
+            } = config_orig.clone();
+            
+            // Create a new config instance from the cloned parts for launching servers
+            // This is needed because ActiveServer::launch_* expects a McpServerConfig
+            let launch_config = McpServerConfig { 
+                name: server_name.clone(), 
+                enabled: _enabled, // Must match the original
+                transport: transport.clone(), // Clone transport for the new instance
+                command: command.clone(),
+                args: args.clone(),
+                env: env.clone(),
+                auto_execute: auto_execute.clone(),
+            };
+            
             if std::env::var("DEBUG").is_ok() {
-                println!("Starting MCP server '{}' with transport {:?}", config.name, config.transport);
+                println!("Starting MCP server '{}' with transport {:?}", server_name, transport);
             }
             
-            if config.transport == McpTransport::Stdio {
-                match ActiveServer::launch_stdio(
-                    &host.next_request_id, 
-                    config.clone()
-                ).await {
-                    Ok((active_server, init_future)) => {
-                        let server_name = active_server.config.name.clone();
-                        servers_map.insert(server_name.clone(), active_server);
-                        // Spawn a task to wait for the initialization result
-                        init_tasks.push(task::spawn(async move {
-                            match init_future.await {
-                                Ok(Ok(_)) => {
-                                    info!("MCP Server '{}' initialized successfully.", server_name);
-                                    if std::env::var("DEBUG").is_ok() {
-                                        println!("MCP Server '{}' initialized successfully.", server_name);
+            match transport {
+                McpTransport::Stdio => {
+                    match ActiveServer::launch_stdio(
+                        &host.next_request_id, 
+                        launch_config
+                    ).await {
+                        Ok((active_server, init_future)) => {
+                            let server_name_task = active_server.config.name.clone();
+                            servers_map.insert(server_name_task.clone(), active_server);
+                            // Spawn a task to wait for the initialization result
+                            init_tasks.push(task::spawn(async move {
+                                match init_future.await {
+                                    Ok(Ok(_)) => {
+                                        info!("MCP Server '{server_name_task}' via Stdio initialized successfully.");
+                                        if std::env::var("DEBUG").is_ok() {
+                                            println!("MCP Server '{server_name_task}' initialized successfully.");
+                                        }
+                                        Ok(server_name_task)
                                     }
-                                    Ok(server_name)
+                                    Ok(Err(rpc_error)) => {
+                                        error!(
+                                            "MCP Server '{server_name_task}' via Stdio initialization failed: {rpc_error:?}",
+                                        );
+                                        println!("MCP Server '{server_name_task}' initialization failed: {rpc_error:?}");
+                                        Err(format!(
+                                            "Server '{server_name_task}' init failed"
+                                        ))
+                                    }
+                                    Err(timeout_error) => {
+                                        error!(
+                                            "MCP Server '{server_name_task}' via Stdio initialization timed out: {timeout_error}",
+                                        );
+                                        println!("MCP Server '{server_name_task}' initialization timed out: {timeout_error}");
+                                        Err(format!(
+                                            "Server '{server_name_task}' init timed out"
+                                        ))
+                                    }
                                 }
-                                Ok(Err(rpc_error)) => {
-                                    error!(
-                                        "MCP Server '{}' initialization failed: {:?}",
-                                        server_name, rpc_error
-                                    );
-                                    println!("MCP Server '{}' initialization failed: {:?}", server_name, rpc_error);
-                                    Err(format!(
-                                        "Server '{}' init failed",
-                                        server_name
-                                    ))
-                                }
-                                Err(timeout_error) => {
-                                    error!(
-                                        "MCP Server '{}' initialization timed out: {}",
-                                        server_name, timeout_error
-                                    );
-                                    println!("MCP Server '{}' initialization timed out: {}", server_name, timeout_error);
-                                    Err(format!(
-                                        "Server '{}' init timed out",
-                                        server_name
-                                    ))
-                                }
-                            }
-                        }));
+                            }));
+                        }
+                        Err(e) => {
+                            error!("Failed to launch MCP server '{server_name}' via Stdio: {e}");
+                            println!("Failed to launch MCP server '{server_name}': {e}");
+                        }
                     }
-                    Err(e) => {
-                        error!("Failed to launch MCP server '{}': {}", config.name, e);
-                        println!("Failed to launch MCP server '{}': {}", config.name, e);
-                        // Optionally collect launch errors to return later
+                },
+                McpTransport::SSE { url, headers } => {
+                    info!("Connecting to MCP server '{server_name}' via SSE at {url}");
+                    // Launch SSE transport connection
+                    match ActiveServer::launch_sse(
+                        &host.next_request_id,
+                        launch_config,
+                        url.clone(),
+                        headers.clone(),
+                    ).await {
+                        Ok((active_server, init_future)) => {
+                            let server_name_task = active_server.config.name.clone();
+                            servers_map.insert(server_name_task.clone(), active_server);
+                            // Spawn a task to wait for the initialization result
+                            init_tasks.push(task::spawn(async move {
+                                match init_future.await {
+                                    Ok(Ok(_)) => {
+                                        info!("MCP Server '{server_name_task}' via SSE initialized successfully.");
+                                        Ok(server_name_task)
+                                    }
+                                    Ok(Err(rpc_error)) => {
+                                        error!("MCP Server '{server_name_task}' via SSE initialization failed: {rpc_error:?}");
+                                        Err(format!("Server '{server_name_task}' init failed"))
+                                    }
+                                    Err(timeout_error) => {
+                                        error!("MCP Server '{server_name_task}' via SSE initialization timed out: {timeout_error}");
+                                        Err(format!("Server '{server_name_task}' init timed out"))
+                                    }
+                                }
+                            }));
+                        }
+                        Err(e) => {
+                            error!("Failed to connect to MCP server '{server_name}' via SSE: {e}");
+                        }
+                    }
+                },
+                McpTransport::WebSocket { url, headers } => {
+                    info!("Connecting to MCP server '{server_name}' via WebSocket at {url}");
+                    // Launch WebSocket transport connection
+                    match ActiveServer::launch_websocket(
+                        &host.next_request_id,
+                        launch_config,
+                        url.clone(),
+                        headers.clone(),
+                    ).await {
+                        Ok((active_server, init_future)) => {
+                            let server_name_task = active_server.config.name.clone();
+                            servers_map.insert(server_name_task.clone(), active_server);
+                            // Spawn a task to wait for the initialization result
+                            init_tasks.push(task::spawn(async move {
+                                match init_future.await {
+                                    Ok(Ok(_)) => {
+                                        info!("MCP Server '{server_name_task}' via WebSocket initialized successfully.");
+                                        Ok(server_name_task)
+                                    }
+                                    Ok(Err(rpc_error)) => {
+                                        error!("MCP Server '{server_name_task}' via WebSocket initialization failed: {rpc_error:?}");
+                                        Err(format!("Server '{server_name_task}' init failed"))
+                                    }
+                                    Err(timeout_error) => {
+                                        error!("MCP Server '{server_name_task}' via WebSocket initialization timed out: {timeout_error}");
+                                        Err(format!("Server '{server_name_task}' init timed out"))
+                                    }
+                                }
+                            }));
+                        }
+                        Err(e) => {
+                            error!("Failed to connect to MCP server '{server_name}' via WebSocket: {e}");
+                        }
                     }
                 }
             }
-            // TODO: Handle other transports
         }
 
         // Move successfully launched servers into the main map
@@ -357,6 +447,9 @@ impl McpHost {
             if let Some(shutdown_tx) = server.shutdown_signal.lock().await.take() {
                 let _ = shutdown_tx.send(());
             }
+            
+            // Set the should_stop flag to signal tasks to stop
+            *server.should_stop.lock().await = true;
             
             // 2. Try to gracefully shut down each server with the 'shutdown' method
             // (per LSP spec, followed by 'exit' notification)

@@ -6,9 +6,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use crate::mcp::rpc::{Request, Response, JsonRpcError, InitializeResult, ServerInfo, ServerCapabilities, Tool, Resource};
 
-// Define basic JSON-RPC structures - TODO: Move to shared rpc module
-
-// MCP server capabilities - TODO: Move to shared rpc module
 
 // Command execution result
 #[derive(Serialize, Deserialize, Debug)]

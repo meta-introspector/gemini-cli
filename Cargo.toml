@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.4", features = ["derive"] }
@@ -26,6 +26,7 @@ futures = "0.3"
 lazy_static = "1.4"
 ctrlc = "3.4.6"
 diffy = "0.3"
+futures-util = "0.3.31"
 
 [[bin]]
 name = "gemini-cli-bin"

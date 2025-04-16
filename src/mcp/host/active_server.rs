@@ -14,6 +14,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Command};
 use tokio::sync::{mpsc, Mutex, oneshot};
 use tokio::task;
+use reqwest;
+use futures_util::StreamExt;
 
 // Implementation methods for ActiveServer
 impl ActiveServer {
@@ -169,7 +171,7 @@ impl ActiveServer {
         };
         let init_params = rpc::InitializeParams {
             client_info,
-            trace: None, // TODO: Add trace support?
+            trace: None,
         };
         let init_request = Request::new(
             Some(json!(init_request_id)),
@@ -215,9 +217,402 @@ impl ActiveServer {
                 writer_task: Arc::new(Mutex::new(Some(writer_handle))),
                 stderr_task: Arc::new(Mutex::new(Some(stderr_handle))),
                 shutdown_signal: Arc::new(Mutex::new(Some(shutdown_tx))),
+                should_stop: Arc::new(Mutex::new(false)),
             },
             tokio::time::timeout(init_timeout, init_responder_rx),
         ))
+    }
+
+    // Launch a server using SSE (Server-Sent Events) transport
+    pub async fn launch_sse(
+        next_request_id_ref: &Arc<AtomicU64>,
+        config: McpServerConfig,
+        url: String,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<
+        (
+            ActiveServer,
+            tokio::time::Timeout<oneshot::Receiver<Result<Value, JsonRpcError>>>,
+        ),
+        String,
+    > {
+        let server_name = config.name.clone();
+        info!("Connecting to MCP server (SSE): {} at {}", server_name, url);
+        
+        // Create shared state
+        let capabilities = Arc::new(Mutex::new(None));
+        let pending_requests = Arc::new(Mutex::new(HashMap::new()));
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(CHANNEL_BUFFER_SIZE);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        
+        // Create a flag to indicate when writer should stop
+        let should_stop = Arc::new(Mutex::new(false));
+        
+        // Configure HTTP client for SSE connection
+        let mut client_builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30));
+        
+        // Add headers if provided
+        if let Some(header_map) = headers {
+            let mut headers = reqwest::header::HeaderMap::new();
+            for (key, value) in header_map {
+                match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
+                    Ok(header_name) => {
+                        match reqwest::header::HeaderValue::from_str(&value) {
+                            Ok(header_value) => { headers.insert(header_name, header_value); }
+                            Err(e) => return Err(format!("Invalid header value for '{}': {}", key, e))
+                        }
+                    }
+                    Err(e) => return Err(format!("Invalid header name '{}': {}", key, e))
+                }
+            }
+            client_builder = client_builder.default_headers(headers);
+        }
+        
+        let client = client_builder.build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+        
+        // Process for SSE is created as a dummy process that's never used
+        // This is to maintain compatibility with the stdio API
+        let process = Arc::new(Mutex::new(
+            tokio::process::Command::new("echo")
+                .arg("dummy")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("Failed to create dummy process: {}", e))?
+        ));
+        
+        // SSE reader task
+        let server_name_clone = server_name.clone();
+        let capabilities_clone = capabilities.clone();
+        let pending_requests_clone = pending_requests.clone();
+        let url_clone = url.clone();
+        let client_clone = client.clone();
+        let should_stop_clone = should_stop.clone();
+        
+        let sse_reader_task = task::spawn(async move {
+            // Connect to SSE endpoint
+            let request = client_clone.get(&url_clone)
+                .header("Accept", "text/event-stream");
+            
+            let response = match request.send().await {
+                Ok(resp) => {
+                    if !resp.status().is_success() {
+                        error!("SSE connection failed with status {}: {}", 
+                               resp.status(), server_name_clone);
+                        // Signal writer to stop
+                        *should_stop_clone.lock().await = true;
+                        return;
+                    }
+                    resp
+                },
+                Err(e) => {
+                    error!("Failed to connect to SSE endpoint for '{}': {}", 
+                           server_name_clone, e);
+                    // Signal writer to stop
+                    *should_stop_clone.lock().await = true;
+                    return;
+                }
+            };
+            
+            // Process SSE events
+            let mut byte_stream = response.bytes_stream();
+            let mut buffer = Vec::new();
+            
+            loop {
+                tokio::select! {
+                    // Process incoming SSE events
+                    Some(chunk_result) = byte_stream.next() => {
+                        match chunk_result {
+                            Ok(chunk) => {
+                                // Process the chunk data, looking for complete JSON-RPC messages
+                                for byte in chunk {
+                                    buffer.push(byte);
+                                    
+                                    // Check if we have a complete message (for simplicity, assuming each message
+                                    // is a separate SSE event with proper line endings)
+                                    if buffer.ends_with(b"\n\n") {
+                                        // Try to parse as JSON-RPC message
+                                        let json_str = String::from_utf8_lossy(&buffer);
+                                        
+                                        // Extract JSON content from SSE format (data: {...}\n\n)
+                                        let json_content = json_str.lines()
+                                            .filter(|line| line.starts_with("data: "))
+                                            .map(|line| &line[6..]) // Skip "data: " prefix
+                                            .collect::<Vec<_>>()
+                                            .join("");
+                                        
+                                        if !json_content.is_empty() {
+                                            debug!("Received SSE event from '{}': {}", 
+                                                   server_name_clone, json_content);
+                                            
+                                            // Process the JSON-RPC message
+                                            match serde_json::from_str::<rpc::Message>(&json_content) {
+                                                Ok(rpc::Message::Response(response)) => {
+                                                    message_handler::handle_response(
+                                                        &server_name_clone,
+                                                        response,
+                                                        capabilities_clone.clone(),
+                                                        pending_requests_clone.clone()
+                                                    ).await;
+                                                },
+                                                Ok(rpc::Message::Notification(notification)) => {
+                                                    message_handler::handle_notification(
+                                                        &server_name_clone,
+                                                        notification
+                                                    ).await;
+                                                },
+                                                Ok(rpc::Message::Request(request)) => {
+                                                    message_handler::handle_server_request(
+                                                        &server_name_clone,
+                                                        request
+                                                    ).await;
+                                                },
+                                                Err(e) => {
+                                                    error!("Error parsing SSE message from '{}': {}", 
+                                                           server_name_clone, e);
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Clear buffer for next message
+                                        buffer.clear();
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                error!("Error reading SSE stream for '{}': {}", 
+                                       server_name_clone, e);
+                                break;
+                            }
+                        }
+                    },
+                    
+                    else => break
+                }
+            }
+            
+            info!("SSE reader task for '{}' exited", server_name_clone);
+        });
+        
+        // SSE writer task
+        let server_name_clone = server_name.clone();
+        let client_clone = client.clone();
+        let url_clone = url.clone();
+        let should_stop_clone = should_stop.clone();
+        
+        let sse_writer_task = task::spawn(async move {
+            // Process outgoing messages to send to the SSE server
+            loop {
+                // First check if we should stop
+                if *should_stop_clone.lock().await {
+                    info!("SSE writer for '{}' stopping due to stop flag", server_name_clone);
+                    break;
+                }
+                
+                // Use a timeout to periodically check the should_stop flag
+                let message = tokio::select! {
+                    Some(msg) = stdin_rx.recv() => Some(msg),
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => None,
+                };
+                
+                if let Some(message) = message {
+                    debug!("Sending to SSE server '{}': {}", server_name_clone, message);
+                    
+                    // Send message via HTTP POST to the SSE server's submission endpoint
+                    let result = client_clone.post(&url_clone)
+                        .header("Content-Type", "application/json")
+                        .body(message)
+                        .send()
+                        .await;
+                    
+                    if let Err(e) = result {
+                        error!("Failed to send message to SSE server '{}': {}", 
+                               server_name_clone, e);
+                    }
+                }
+            }
+            
+            info!("SSE writer task for '{}' exited", server_name_clone);
+        });
+        
+        // Setup initialization request
+        let init_request_id = next_request_id_ref.fetch_add(1, Ordering::Relaxed);
+        let (init_responder_tx, init_responder_rx) = oneshot::channel();
+        
+        pending_requests.lock().await.insert(
+            init_request_id,
+            PendingRequest {
+                responder: init_responder_tx,
+                method: "initialize".to_string(),
+            },
+        );
+        
+        let client_info = ClientInfo {
+            name: APP_NAME.to_string(),
+            version: APP_VERSION.to_string(),
+        };
+        
+        let init_params = rpc::InitializeParams {
+            client_info,
+            trace: None,
+        };
+        
+        let init_request = Request::new(
+            Some(json!(init_request_id)),
+            "initialize".to_string(),
+            Some(serde_json::to_value(init_params).map_err(|e| {
+                format!("Failed to serialize init params: {}", e)
+            })?),
+        );
+        
+        let request_json = serde_json::to_string(&init_request)
+            .map_err(|e| format!("Failed to serialize init request: {}", e))?;
+        
+        // Send initialization request
+        if let Err(e) = stdin_tx.send(request_json).await {
+            pending_requests.lock().await.remove(&init_request_id);
+            return Err(format!("Failed to send initialize request: {}", e));
+        }
+        
+        // Create ActiveServer instance
+        let active_server = ActiveServer {
+            config,
+            process,
+            stdin_tx: stdin_tx.clone(),
+            capabilities: capabilities.clone(),
+            pending_requests: pending_requests.clone(),
+            reader_task: Arc::new(Mutex::new(Some(sse_reader_task))),
+            writer_task: Arc::new(Mutex::new(Some(sse_writer_task))),
+            stderr_task: Arc::new(Mutex::new(None)), // No stderr task for SSE
+            shutdown_signal: Arc::new(Mutex::new(Some(shutdown_tx))),
+            should_stop: should_stop,
+        };
+        
+        // Return server and initialization future
+        let init_timeout = Duration::from_secs(10);
+        Ok((
+            active_server,
+            tokio::time::timeout(init_timeout, init_responder_rx),
+        ))
+    }
+
+    // Launch a server using WebSocket transport
+    pub async fn launch_websocket(
+        next_request_id_ref: &Arc<AtomicU64>,
+        config: McpServerConfig,
+        url: String,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<
+        (
+            ActiveServer,
+            tokio::time::Timeout<oneshot::Receiver<Result<Value, JsonRpcError>>>,
+        ),
+        String,
+    > {
+        let server_name = config.name.clone();
+        info!("Connecting to MCP server (WebSocket): {} at {}", server_name, url);
+        
+        // Create shared state
+        let capabilities = Arc::new(Mutex::new(None));
+        let pending_requests = Arc::new(Mutex::new(HashMap::new()));
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(CHANNEL_BUFFER_SIZE);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        
+        // Create a flag to indicate when writer should stop
+        let should_stop = Arc::new(Mutex::new(false));
+        
+        // Process for WebSocket is created as a dummy process that's never used
+        // This is to maintain compatibility with the stdio API
+        let process = Arc::new(Mutex::new(
+            tokio::process::Command::new("echo")
+                .arg("dummy")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("Failed to create dummy process: {}", e))?
+        ));
+        
+        // WebSocket connection
+        // Note: This implementation sketch assumes tokio_tungstenite for WebSocket handling
+        // Real implementation would need to add this dependency to Cargo.toml
+        /*
+        let ws_url = url::Url::parse(&url)
+            .map_err(|e| format!("Invalid WebSocket URL: {}", e))?;
+            
+        let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(ws_url.as_str())
+            .header("User-Agent", format!("{}/{}", APP_NAME, APP_VERSION));
+            
+        // Add custom headers if provided
+        if let Some(header_map) = &headers {
+            for (key, value) in header_map {
+                request = request.header(key, value);
+            }
+        }
+        
+        let request = request.body(())
+            .map_err(|e| format!("Failed to build WebSocket request: {}", e))?;
+            
+        // Connect to WebSocket server
+        let (ws_stream, _) = tokio_tungstenite::connect_async(request).await
+            .map_err(|e| format!("Failed to connect to WebSocket server: {}", e))?;
+            
+        let (write, read) = ws_stream.split();
+        */
+        
+        // For now, we'll just log that WebSocket is not fully implemented
+        warn!("WebSocket transport not fully implemented. Use stdio transport for now.");
+        
+        // Setup initialization request
+        let init_request_id = next_request_id_ref.fetch_add(1, Ordering::Relaxed);
+        let (init_responder_tx, init_responder_rx) = oneshot::channel();
+        
+        pending_requests.lock().await.insert(
+            init_request_id,
+            PendingRequest {
+                responder: init_responder_tx,
+                method: "initialize".to_string(),
+            },
+        );
+        
+        // Create dummy tasks that just wait for shutdown
+        let server_name_clone = server_name.clone();
+        let ws_reader_task = task::spawn(async move {
+            info!("WebSocket reader task for '{}' started (placeholder)", server_name_clone);
+            let _ = shutdown_rx.await;
+            info!("WebSocket reader task for '{}' received shutdown signal", server_name_clone);
+        });
+        
+        let server_name_clone = server_name.clone();
+        let ws_writer_task = task::spawn(async move {
+            info!("WebSocket writer task for '{}' started (placeholder)", server_name_clone);
+            while let Some(message) = stdin_rx.recv().await {
+                debug!("Received message to send via WebSocket (dropping): {}", message);
+            }
+            info!("WebSocket writer task for '{}' exited", server_name_clone);
+        });
+        
+        // Create ActiveServer instance
+        let active_server = ActiveServer {
+            config,
+            process,
+            stdin_tx: stdin_tx.clone(),
+            capabilities: capabilities.clone(),
+            pending_requests: pending_requests.clone(),
+            reader_task: Arc::new(Mutex::new(Some(ws_reader_task))),
+            writer_task: Arc::new(Mutex::new(Some(ws_writer_task))),
+            stderr_task: Arc::new(Mutex::new(None)), // No stderr task for WebSocket
+            shutdown_signal: Arc::new(Mutex::new(Some(shutdown_tx))),
+            should_stop: Arc::new(Mutex::new(false)),
+        };
+        
+        // Return error for now since WebSocket is not fully implemented
+        // In a real implementation, we would return the active server and init future
+        Err("WebSocket transport not fully implemented. Use stdio transport for now.".to_string())
     }
 
     // Sends a "tool/execute" request to the server and awaits the response.

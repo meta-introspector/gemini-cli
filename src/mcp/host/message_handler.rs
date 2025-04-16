@@ -1,7 +1,7 @@
 use crate::mcp::host::types::PendingRequest;
-use crate::mcp::rpc::{self, JsonRpcError, Message, Notification, Response, ServerCapabilities, LogMessageParams};
+use crate::mcp::rpc::{self, JsonRpcError, Message, Notification, Response, Request, ServerCapabilities, LogMessageParams, ProgressParams, CancelParams};
 use log::{debug, error, info, warn};
-use serde_json::{self, Value};
+use serde_json::{self, Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -36,8 +36,7 @@ pub async fn stdout_reader_loop<R: AsyncRead + Unpin>(
                         handle_notification(server_name, notification).await;
                     }
                     Ok(Message::Request(request)) => {
-                        warn!("Received unexpected request from server '{}': {:?}", server_name, request);
-                        // TODO: Handle server-initiated requests if MCP spec allows/requires (e.g., Sampling)
+                        handle_server_request(server_name, request).await;
                     }
                     Err(e) => {
                         error!("Error deserializing MCP message from '{}': {}. Payload: {}", server_name, e, json_payload);
@@ -74,6 +73,25 @@ pub async fn stdout_reader_loop<R: AsyncRead + Unpin>(
                 message: "Server connection closed unexpectedly".to_string(),
                 data: None,
             }));
+        }
+    }
+}
+
+// Handles a server-initiated request
+pub async fn handle_server_request(server_name: &str, request: Request) {
+    info!("Received request '{}' from server '{}': params={:?}", request.method, server_name, request.params);
+    
+    // Handle different types of server-initiated requests
+    match request.method.as_str() {
+        "sampling/start" => {
+            // Handle sampling start request (if implemented)
+            info!("Server '{}' requested sampling start", server_name);
+            // Implementation would depend on the sampling mechanics
+            // For now, just log the request
+        },
+        _ => {
+            warn!("Unsupported server request '{}' from '{}'", request.method, server_name);
+            // We could send an error response back to the server here if needed
         }
     }
 }
@@ -184,16 +202,14 @@ pub async fn handle_response(
 
 // Handles a notification message from the server
 pub async fn handle_notification(server_name: &str, notification: Notification) {
-    info!(
-        "Received notification '{}' from server '{}': params={:?}",
-        notification.method, server_name, notification.params
-    );
-    // TODO: Implement handling for specific notifications if needed (e.g., $/progress, logMessage)
+    info!("Received notification '{}' from server '{}': params={:?}", 
+          notification.method, server_name, notification.params);
+    
     match notification.method.as_str() {
-        "window/logMessage" => { // Example standard LSP/MCP notification
+        "window/logMessage" => { // Standard LSP/MCP notification
             if let Some(params) = notification.params {
                 if let Ok(log_params) = serde_json::from_value::<LogMessageParams>(params) {
-                    // Map type to log level (example)
+                    // Map type to log level
                     match log_params.type_ {
                         1 => error!("[MCP Log - {}]: {}", server_name, log_params.message),
                         2 => warn!("[MCP Log - {}]: {}", server_name, log_params.message),
@@ -204,12 +220,48 @@ pub async fn handle_notification(server_name: &str, notification: Notification) 
                     warn!("Failed to parse logMessage params from {}", server_name);
                 }
             }
-        }
+        },
+        "$/progress" => { // LSP/MCP progress notification
+            if let Some(params) = notification.params {
+                if let Ok(progress_params) = serde_json::from_value::<ProgressParams>(params) {
+                    // Log the progress notification
+                    info!("[MCP Progress - {}]: token={:?}, value={:?}", 
+                          server_name, progress_params.token, progress_params.value);
+                    
+                    // Additional progress handling could be implemented here
+                    // For example, updating a progress bar or notifying the user
+                } else {
+                    warn!("Failed to parse progress params from {}", server_name);
+                }
+            }
+        },
         "$/cancelRequest" => {
-            warn!("Received unsupported cancelRequest from {}", server_name);
-            // TODO: Implement request cancellation if needed
-        }
-        // Handle other notifications like $/progress, etc.
+            if let Some(params) = notification.params {
+                if let Ok(cancel_params) = serde_json::from_value::<CancelParams>(params) {
+                    // Log the cancellation request
+                    info!("[MCP Cancel - {}]: Cancellation requested for id={:?}", 
+                          server_name, cancel_params.id);
+                    
+                    // Convert the ID to a u64 if possible
+                    let request_id_opt: Option<u64> = match &cancel_params.id {
+                        Value::Number(n) => n.as_u64(),
+                        Value::String(s) => s.parse::<u64>().ok(),
+                        _ => None,
+                    };
+                    
+                    if let Some(id) = request_id_opt {
+                        // Here we would implement the actual cancellation logic
+                        // This could involve setting a flag in an active request handler
+                        // or stopping ongoing work for the specified request ID
+                        warn!("Request cancellation for ID {} is not fully implemented yet", id);
+                    } else {
+                        warn!("Invalid request ID format in cancellation request: {:?}", cancel_params.id);
+                    }
+                } else {
+                    warn!("Failed to parse cancelRequest params from {}", server_name);
+                }
+            }
+        },
         _ => {
             debug!("Unhandled notification '{}' from {}", notification.method, server_name);
         }

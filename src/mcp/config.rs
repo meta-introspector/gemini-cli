@@ -26,7 +26,14 @@ pub struct McpServerConfig {
 #[serde(rename_all = "lowercase")]
 pub enum McpTransport {
     Stdio,
-    // TODO: Add SSE later if needed
+    SSE { 
+        url: String,
+        headers: Option<HashMap<String, String>>
+    },
+    WebSocket {
+        url: String,
+        headers: Option<HashMap<String, String>>
+    }
 }
 
 pub fn get_mcp_config_path() -> io::Result<PathBuf> {

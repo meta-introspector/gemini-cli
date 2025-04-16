@@ -8,10 +8,6 @@ use dirs; // Added for home_directory resource
 use crate::mcp::rpc::{Request, Response, JsonRpcError, InitializeResult, ServerInfo, ServerCapabilities, Tool, Resource}; // Added import
 use diffy; // Use diffy for patching
 
-// Define basic JSON-RPC structures - TODO: Move to shared rpc module
-
-// MCP server capabilities - TODO: Move to shared rpc module
-
 
 /// Run the application as a filesystem MCP server
 pub async fn run() -> Result<(), Box<dyn Error>> {
@@ -272,44 +268,74 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                                                 "list_directory" => {
                                                     // List directory implementation
                                                     let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                                                    let _recursive = arguments.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
-                                                    // Using _recursive to avoid the unused variable warning
+                                                    let recursive = arguments.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+                                                    
+                                                    // Helper function for recursive listing
+                                                    fn list_directory_recursively(dir_path: &str, files: &mut Vec<serde_json::Value>) -> io::Result<()> {
+                                                        for entry in std::fs::read_dir(dir_path)? {
+                                                            let entry = entry?;
+                                                            let file_type = entry.file_type()?;
+                                                            let name = entry.file_name().to_string_lossy().to_string();
+                                                            let path = entry.path().to_string_lossy().to_string();
+                                                            
+                                                            files.push(json!({
+                                                                "name": name,
+                                                                "path": path,
+                                                                "is_dir": file_type.is_dir(),
+                                                                "is_file": file_type.is_file(),
+                                                                "is_symlink": file_type.is_symlink(),
+                                                            }));
+                                                            
+                                                            // Recursively list subdirectories
+                                                            if file_type.is_dir() {
+                                                                list_directory_recursively(&path, files)?;
+                                                            }
+                                                        }
+                                                        Ok(())
+                                                    }
 
-                                                    match std::fs::read_dir(path) {
-                                                        Ok(entries) => {
-                                                            let mut files = Vec::new();
+                                                    match if recursive {
+                                                        // If recursive, use our helper function
+                                                        let mut files = Vec::new();
+                                                        match list_directory_recursively(path, &mut files) {
+                                                            Ok(()) => Ok(files),
+                                                            Err(e) => Err(e)
+                                                        }
+                                                    } else {
+                                                        // Non-recursive listing (existing logic)
+                                                        let mut files = Vec::new();
+                                                        let entries = std::fs::read_dir(path)?;
+                                                        for entry in entries {
+                                                            if let Ok(entry) = entry {
+                                                                let file_type = entry.file_type(); // Handle error below
+                                                                let name = entry.file_name().to_string_lossy().to_string();
+                                                                let path = entry.path().to_string_lossy().to_string();
 
-                                                            for entry in entries {
-                                                                if let Ok(entry) = entry {
-                                                                    let file_type = entry.file_type(); // Handle error below
-                                                                    let name = entry.file_name().to_string_lossy().to_string();
-                                                                    let path = entry.path().to_string_lossy().to_string();
-
-                                                                    match file_type {
-                                                                        Ok(ft) => {
-                                                                            files.push(json!({
-                                                                                "name": name,
-                                                                                "path": path,
-                                                                                "is_dir": ft.is_dir(),
-                                                                                "is_file": ft.is_file(),
-                                                                                "is_symlink": ft.is_symlink(),
-                                                                            }));
-                                                                        },
-                                                                        Err(e) => {
-                                                                            eprintln!("Could not get file type for {:?}: {}", entry.path(), e);
-                                                                            // Optionally skip or add an error indicator
-                                                                             files.push(json!({
-                                                                                "name": name,
-                                                                                "path": path,
-                                                                                "error": format!("Could not get file type: {}", e),
-                                                                            }));
-                                                                        }
+                                                                match file_type {
+                                                                    Ok(ft) => {
+                                                                        files.push(json!({
+                                                                            "name": name,
+                                                                            "path": path,
+                                                                            "is_dir": ft.is_dir(),
+                                                                            "is_file": ft.is_file(),
+                                                                            "is_symlink": ft.is_symlink(),
+                                                                        }));
+                                                                    },
+                                                                    Err(e) => {
+                                                                        eprintln!("Could not get file type for {:?}: {}", entry.path(), e);
+                                                                        // Optionally skip or add an error indicator
+                                                                         files.push(json!({
+                                                                            "name": name,
+                                                                            "path": path,
+                                                                            "error": format!("Could not get file type: {}", e),
+                                                                        }));
                                                                     }
-
-                                                                    // TODO: Implement recursive listing if needed
                                                                 }
                                                             }
-
+                                                        }
+                                                        Ok(files)
+                                                    } {
+                                                        Ok(files) => {
                                                             let response = Response {
                                                                 jsonrpc: "2.0".to_string(),
                                                                 id: request.id.unwrap_or(json!(null)),

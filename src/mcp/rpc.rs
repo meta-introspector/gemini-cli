@@ -165,8 +165,6 @@ pub struct ServerCapabilities {
     pub tools: Vec<Tool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<Resource>,
-    // TODO: Add prompts if needed
-    // TODO: Add other capabilities like sampling support
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -176,7 +174,6 @@ pub struct Tool {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>, // JSON Schema for parameters
-    // TODO: Add result schema?
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -184,7 +181,6 @@ pub struct Tool {
 pub struct Resource {
     pub name: String,
     pub description: Option<String>,
-    // TODO: Add schema/type information?
 }
 
 // --- MCP Tool Execution Types ---
@@ -216,6 +212,19 @@ pub struct LogMessageParams {
     pub message: String,
 }
 
+// LSP/MCP $/progress notification params
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProgressParams {
+    pub token: Value, // The progress token (number or string)
+    pub value: Value, // The progress data
+}
+
+// LSP/MCP $/cancelRequest notification params
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CancelParams {
+    pub id: Value, // The request id to cancel
+}
+
 // `resource/get` request parameters
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -233,5 +242,3 @@ pub fn create_log_notification(message: &str, level: i32) -> Notification {
     }));
     Notification::new("window/logMessage".to_string(), params)
 }
-
-// TODO: Define structs for other MCP methods like `mcp/resource/get`, notifications, etc. 

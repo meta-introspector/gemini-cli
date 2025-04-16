@@ -33,6 +33,7 @@ pub struct ActiveServer {
     pub writer_task: Arc<Mutex<Option<task::JoinHandle<()>>>>,
     pub stderr_task: Arc<Mutex<Option<task::JoinHandle<()>>>>,
     pub shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()>>>>, // To signal reader/writer tasks to stop
+    pub should_stop: Arc<Mutex<bool>>, // Flag to indicate tasks should stop
 }
 
 // Clone implementation needed for passing ActiveServer around (due to Arcs)
@@ -48,6 +49,7 @@ impl Clone for ActiveServer {
             writer_task: self.writer_task.clone(),
             stderr_task: self.stderr_task.clone(),
             shutdown_signal: self.shutdown_signal.clone(),
+            should_stop: self.should_stop.clone(),
         }
     }
 } 
