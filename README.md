@@ -1,29 +1,63 @@
-# Gemini Rust CLI
+# Gemini Rust CLI 🦀
 
 A command-line interface (CLI) tool written in Rust to interact with Google Gemini models from the Linux terminal.
 
-## Features
+## ✨ Table of Contents
 
-*   Send prompts to Gemini models.
-*   View the last 5 commands from your shell history for better context.
-*   **In-memory conversation history** for continuous conversations in the same terminal session.
-*   **Automatic conversation summarization** when token count gets too large.
-*   **Interactive chat mode** (`-i`) for continuous conversation with the model.
-*   **Task Loop mode** (`-t`) for persistent task execution with AI-controlled flow.
-*   Persistent configuration for API Key and System Prompt.
-*   Configure API key via config file, environment variable, or command-line flag (for setting).
-*   Special flag (`-c`) to request Linux command help. **The CLI will propose a command and ask for your confirmation before executing it.**
-*   **MCP Integration** for function calling and tool execution.
-*   **Resource access** through MCP servers.
+*   [Features](#-features)
+*   [Prerequisites](#-prerequisites)
+*   [Installation](#-installation)
+    *   [Manual Installation](#manual-installation-if-not-using-bashzsh-or-prefer-manual-setup-)
+*   [Configuration](#-configuration)
+    *   [Command History Context](#command-history-context)
+    *   [Chat History](#chat-history)
+    *   [Automatic History Summarization](#automatic-history-summarization)
+    *   [API Key Precedence](#api-key-precedence)
+    *   [System Prompt Precedence](#system-prompt-precedence)
+*   [Memory Features](#-memory-features)
+    *   [Memory Broker](#memory-broker)
+    *   [Auto Memory](#auto-memory)
+    *   [Deduplication Tool](#deduplication-tool)
+    *   [How It Works](#how-it-works)
+*   [MCP Integration](#-mcp-integration)
+    *   [Included MCP Servers](#included-mcp-servers)
+        *   [Filesystem MCP Server](#filesystem-mcp-server)
+        *   [Command MCP Server](#command-mcp-server)
+    *   [External MCP Servers](#external-mcp-servers)
+    *   [MCP Server Installation](#mcp-server-installation)
+    *   [MCP Configuration](#mcp-configuration)
+    *   [Security Considerations](#-security-considerations)
+    *   [Function Calling](#-function-calling)
+    *   [Resource Access](#-resource-access)
+*   [Interaction Modes](#-interaction-modes)
+    *   [Single Shot Mode](#single-shot-mode)
+    *   [Interactive Chat Mode](#interactive-chat-mode)
+    *   [Task Loop Mode](#task-loop-mode)
+*   [Usage](#-usage)
+*   [Development](#-development)
 
-## Prerequisites
+## 🚀 Features
 
-*   **Rust Toolchain:** Install from [https://rustup.rs/](https://rustup.rs/)
-*   **Gemini API Key:** Obtain from [Google AI Studio](https://aistudio.google.com/app/apikey).
-*   **Supported Shell:** Bash or Zsh (for automatic wrapper function installation).
-*   **MCP Servers:** (Optional) For function calling and resource access.
+*   💬 Send prompts to Gemini models.
+*   📜 View the last 5 commands from your shell history for better context.
+*   🧠 **In-memory conversation history** for continuous conversations in the same terminal session.
+*   ✍️ **Automatic conversation summarization** when token count gets too large.
+*   🗨️ **Interactive chat mode** (`-i`) for continuous conversation with the model.
+*   🔁 **Task Loop mode** (`-t`) for persistent task execution with AI-controlled flow.
+*   ⚙️ Persistent configuration for API Key and System Prompt.
+*   🔑 Configure API key via config file, environment variable, or command-line flag (for setting).
+*   💻 Special flag (`-c`) to request Linux command help. **The CLI will propose a command and ask for your confirmation before executing it.**
+*   🔗 **MCP Integration** for function calling and tool execution.
+*   📦 **Resource access** through MCP servers.
 
-## Installation
+## ✅ Prerequisites
+
+*   **Rust Toolchain:** Install from [https://rustup.rs/](https://rustup.rs/) 🛠️
+*   **Gemini API Key:** Obtain from [Google AI Studio](https://aistudio.google.com/app/apikey) 🔑
+*   **Supported Shell:** Bash or Zsh (for automatic wrapper function installation) 🐚
+*   **MCP Servers:** (Optional) For function calling and resource access 🔌
+
+## 📦 Installation
 
 The easiest way to install is to use the provided installation script:
 
@@ -43,9 +77,9 @@ The script will:
 4. **Add a wrapper function named `gemini`** to your `~/.bashrc` or `~/.zshrc`.
 5. Prompt you to reload your shell configuration (e.g., `source ~/.zshrc`).
 
-**Important:** You *must* reload your shell configuration after installation for the `gemini` command (the wrapper function) to become available.
+**Important:** You *must* reload your shell configuration after installation for the `gemini` command (the wrapper function) to become available. 🔄
 
-### Manual Installation (If not using Bash/Zsh or prefer manual setup)
+### Manual Installation (If not using Bash/Zsh or prefer manual setup) 🔧
 
 1. Build the binary: `cargo build --release`
 2. Copy the binary: `cp target/release/gemini-cli ~/.local/bin/gemini-cli-bin`
@@ -95,7 +129,7 @@ The script will:
    ```
 5. Reload your shell configuration.
 
-## Configuration
+## ⚙️ Configuration
 
 The CLI uses a configuration file typically located at `~/.config/gemini-cli/config.toml`.
 
@@ -114,10 +148,10 @@ You can manage the configuration using these flags:
     gemini --show-config
     ```
 
-**Command History Context:**
+**Command History Context:** 📜
 By default, Gemini CLI will access your last 5 terminal commands to provide context to the AI. This helps Gemini provide more relevant responses, especially for command-related queries.
 
-**Chat History:**
+**Chat History:** 💬
 Gemini CLI maintains conversation history within a terminal session using files in your config directory. This allows for back-and-forth conversations.
 
 The **`gemini` command uses the terminal session information** to identify conversations, but since each command runs in a separate process, you need to export a session ID variable to maintain history across multiple commands:
@@ -132,7 +166,7 @@ The **`gemini` command uses the terminal session information** to identify conve
 * To disable conversation history: `gemini --disable-history`
 * To enable conversation history: `gemini --enable-history`
 
-**Automatic History Summarization:**
+**Automatic History Summarization:** ✍️
 When a conversation gets too long (exceeding 700,000 estimated tokens), Gemini CLI will automatically summarize the conversation to reduce token usage while preserving the key context and information. This ensures that:
 
 1. Long conversations remain manageable
@@ -146,17 +180,17 @@ To see the current conversation history, token estimates, and system prompt (for
 GEMINI_DEBUG=1 gemini "your prompt"
 ```
 
-**API Key Precedence:**
+**API Key Precedence:** 🔑
 1.  Value set in the configuration file (`~/.config/gemini-cli/config.toml`).
 2.  `GEMINI_API_KEY` environment variable.
 
-**System Prompt Precedence:**
+**System Prompt Precedence:** 🗣️
 1.  Value set in the configuration file.
 2.  Default: "You are a helpful assistant."
 
 **Note:** The `dotenv` crate is still used, so a `.env` file in the **current working directory** (where you run `gemini`) or the **project root** (during development) can set the `GEMINI_API_KEY` environment variable if it's not set globally or in the config file.
 
-## Memory Features
+## 🧠 Memory Features
 
 The Gemini CLI now supports advanced memory features that allow Gemini to remember and recall information across conversations:
 
@@ -164,11 +198,11 @@ The Gemini CLI now supports advanced memory features that allow Gemini to rememb
 
 The memory broker enhances your queries by retrieving relevant information from past interactions:
 
-- **Automatic Relevance Filtering**: Only memories relevant to your current query are included
-- **Seamless Integration**: Relevant memories are provided as context to the model without changing your prompt
-- **Customizable Model**: Control which model is used for relevance filtering
-- **Memory Deduplication**: Automatically detects and removes duplicate memories to keep the memory store clean
-- **Improved Context Integration**: Better formatting of memory context for more natural responses
+- **Automatic Relevance Filtering**: Only memories relevant to your current query are included 🎯
+- **Seamless Integration**: Relevant memories are provided as context to the model without changing your prompt ✨
+- **Customizable Model**: Control which model is used for relevance filtering 🔧
+- **Memory Deduplication**: Automatically detects and removes duplicate memories to keep the memory store clean 🧹
+- **Improved Context Integration**: Better formatting of memory context for more natural responses 👍
 
 To control the memory broker:
 - Enable memory broker: `gemini --enable-memory-broker`
@@ -179,11 +213,11 @@ To control the memory broker:
 
 The auto memory feature automatically extracts and stores important information from conversations:
 
-- **Key Information Extraction**: Identifies facts, preferences, and details worth remembering
-- **Contextual Storage**: Automatically categorizes information with relevant tags
-- **Smart Filtering**: Only stores truly important information, not casual conversation
-- **Duplicate Prevention**: Avoids creating duplicate entries for the same information
-- **Tag Merging**: Intelligently merges tags when updating existing memories
+- **Key Information Extraction**: Identifies facts, preferences, and details worth remembering 📝
+- **Contextual Storage**: Automatically categorizes information with relevant tags 🏷️
+- **Smart Filtering**: Only stores truly important information, not casual conversation 🧠
+- **Duplicate Prevention**: Avoids creating duplicate entries for the same information 🚫
+- **Tag Merging**: Intelligently merges tags when updating existing memories 🔄
 
 To control the auto memory feature:
 - Enable auto memory: `gemini --enable-auto-memory`
@@ -194,10 +228,10 @@ To control the auto memory feature:
 
 The memory system now includes a dedicated deduplication tool that:
 
-- Removes redundant memories while keeping the most recent version
-- Maintains a clean and efficient memory store
-- Runs automatically on startup and periodically during usage
-- Can be triggered manually when needed
+- Removes redundant memories while keeping the most recent version 🧹
+- Maintains a clean and efficient memory store ✨
+- Runs automatically on startup and periodically during usage ⚙️
+- Can be triggered manually when needed 👆
 
 The memory system intelligently manages duplicates by:
 1. Checking for exact key/value matches before storing
@@ -207,55 +241,55 @@ The memory system intelligently manages duplicates by:
 
 ### How It Works
 
-1. **When you ask a question**: 
-   - The memory broker retrieves all memories from the store
-   - Periodically deduplicates the memory store to prevent clutter
-   - Filters memories for relevance to your query using a specialized model
-   - Enhances your query with properly formatted relevant information
+1. **When you ask a question** ❓:
+   - The memory broker retrieves all memories from the store 📚
+   - Periodically deduplicates the memory store to prevent clutter 🧹
+   - Filters memories for relevance to your query using a specialized model 🎯
+   - Enhances your query with properly formatted relevant information ✨
 
-2. **When you get a response**: 
-   - The auto memory system extracts key information
-   - Checks if similar information already exists
-   - Updates existing entries or creates new ones as appropriate
-   - Tags the information with relevant categories for future retrieval
+2. **When you get a response** 💬:
+   - The auto memory system extracts key information 📝
+   - Checks if similar information already exists 🤔
+   - Updates existing entries or creates new ones as appropriate 💾
+   - Tags the information with relevant categories for future retrieval 🏷️
 
-3. **On future queries**: 
-   - Relevant memories are automatically included to provide continuity
-   - The system becomes more useful over time as it builds a personal knowledge base
-   - Duplicate information is consolidated to maintain a clean memory store
+3. **On future queries** ➡️:
+   - Relevant memories are automatically included to provide continuity 🔗
+   - The system becomes more useful over time as it builds a personal knowledge base 📈
+   - Duplicate information is consolidated to maintain a clean memory store ✅
 
 This creates a system that gets more useful over time while remaining efficient and focused on the most relevant information for your needs.
 
-## MCP Integration
+## 🔗 MCP Integration
 
-The Gemini CLI now supports the Mission Control Protocol (MCP) for function calling and resource access. This allows Gemini to:
+The Gemini CLI now supports the Model Context Protocol (MCP) for function calling and resource access. This allows Gemini to:
 
-1. **Execute tools** through MCP servers
-2. **Access resources** provided by MCP servers
-3. **Combine capabilities** from multiple MCP servers
+1. **Execute tools** through MCP servers 🛠️
+2. **Access resources** provided by MCP servers 📦
+3. **Combine capabilities** from multiple MCP servers 🤝
 
 ### Included MCP Servers
 
-#### Filesystem MCP Server
+#### Filesystem MCP Server 📁
 
 The Gemini CLI includes a built-in filesystem MCP server that provides file and directory operations:
 
-- **List directory contents** with optional recursive traversal
-- **Read and write files** with various modes (create, append, overwrite)
-- **Create and delete** files and directories
-- **Get file information** including size, type, and modification times
-- **Access environment directories** like current working directory and home directory
+- **List directory contents** with optional recursive traversal 📂
+- **Read and write files** with various modes (create, append, overwrite) 📝
+- **Create and delete** files and directories ➕➖
+- **Get file information** including size, type, and modification times ℹ️
+- **Access environment directories** like current working directory and home directory 🏠
 
 This server enables Gemini to help with file management tasks directly from the CLI.
 
-#### Command MCP Server
+#### Command MCP Server 💻
 
 The Gemini CLI also includes a built-in command execution MCP server that allows executing system commands:
 
-- **Execute commands** with arguments, working directory, and environment variables
-- **Execute shell commands** using the system's default shell
-- **Get OS information** including OS type, version, architecture
-- **Access environment variables** available to the current process
+- **Execute commands** with arguments, working directory, and environment variables ▶️
+- **Execute shell commands** using the system's default shell 🐚
+- **Get OS information** including OS type, version, architecture 🖥️
+- **Access environment variables** available to the current process 🌍
 
 This server enables Gemini to help with running commands and scripts directly from the CLI.
 
@@ -263,15 +297,15 @@ This server enables Gemini to help with running commands and scripts directly fr
 
 Gemini CLI can connect to and use multiple MCP servers simultaneously:
 
-1. **Built-in servers**: The filesystem and command servers are included with gemini-cli
-2. **Local servers**: You can run custom MCP servers locally and connect via stdio
-3. **Remote servers**: You can connect to remote MCP servers using HTTP+SSE transport
+1. **Built-in servers**: The filesystem and command servers are included with gemini-cli 📦
+2. **Local servers**: You can run custom MCP servers locally and connect via stdio 🔌
+3. **Remote servers**: You can connect to remote MCP servers using HTTP+SSE transport 🌐
 
 When a server is configured, gemini-cli:
-1. Connects to the server during startup
-2. Discovers its tools and resources through the MCP protocol
-3. Makes those tools and resources available to the Gemini model
-4. Handles executing tools and fetching resources when requested by the model
+1. Connects to the server during startup 🔌
+2. Discovers its tools and resources through the MCP protocol 🔍
+3. Makes those tools and resources available to the Gemini model 🤖
+4. Handles executing tools and fetching resources when requested by the model 🚀
 
 ### MCP Server Installation
 
@@ -282,14 +316,14 @@ The built-in MCP servers are automatically installed when you run the installati
 ```
 
 This script:
-1. Builds and installs the gemini-cli binary
-2. Creates wrapper scripts for the filesystem and command MCP servers
-3. Sets up a default MCP server configuration
+1. Builds and installs the gemini-cli binary 🏗️
+2. Creates wrapper scripts for the filesystem and command MCP servers 📜
+3. Sets up a default MCP server configuration ⚙️
 
 To install custom MCP servers:
-1. Build or acquire the MCP server executable
-2. Add it to your PATH or specify its full path in the configuration
-3. Update your MCP server configuration (see below)
+1. Build or acquire the MCP server executable 📦
+2. Add it to your PATH or specify its full path in the configuration 🗺️
+3. Update your MCP server configuration (see below) 📝
 
 ### MCP Configuration
 
@@ -343,14 +377,14 @@ Configuration fields:
 - **url**: Server endpoint URL (for sse transport)
 - **headers**: HTTP headers to send (for sse transport)
 
-### Security Considerations
+### 🔒 Security Considerations
 
 MCP servers, especially the command execution server, can have significant security implications:
 
-1. **User Consent**: gemini-cli always asks for user confirmation before executing any tool
-2. **Permissions**: MCP servers run with the same permissions as the gemini-cli process
-3. **Command Validation**: Always review commands before allowing them to execute
-4. **Tool Access Control**: Disable MCP servers you don't need or trust
+1. **User Consent**: gemini-cli always asks for user confirmation before executing any tool 👍
+2. **Permissions**: MCP servers run with the same permissions as the gemini-cli process 🔑
+3. **Command Validation**: Always review commands before allowing them to execute 👀
+4. **Tool Access Control**: Disable MCP servers you don't need or trust 🚫
 
 For the command MCP server specifically:
 - Review all commands before execution
@@ -358,7 +392,7 @@ For the command MCP server specifically:
 - Consider the working directory and environment context
 - Avoid executing commands that could expose sensitive information
 
-### Function Calling
+### 🛠️ Function Calling
 
 When Gemini detects that a tool should be used, it will:
 
@@ -396,21 +430,21 @@ Filesystem      Size  Used Avail Use% Mounted on
 /dev/sdb1       932G  412G  474G  47% /data
 ```
 
-### Resource Access
+### 📦 Resource Access
 
 Gemini can also access resources provided by MCP servers, such as:
 
-- File system information
-- System metrics and OS information
-- Environment variables
-- Network status
-- And more, depending on the MCP server implementation
+- File system information 📁
+- System metrics and OS information 📊
+- Environment variables 🌍
+- Network status 🌐
+- And more, depending on the MCP server implementation 🧩
 
-## Interaction Modes
+## 🗣️ Interaction Modes
 
 Gemini CLI supports multiple ways to interact with the model:
 
-### Single Shot Mode
+### Single Shot Mode 🎯
 
 This is the default mode, where you provide a single prompt and get a response:
 
@@ -418,7 +452,7 @@ This is the default mode, where you provide a single prompt and get a response:
 gemini "How do I list all files in a directory, including hidden files?"
 ```
 
-### Interactive Chat Mode
+### Interactive Chat Mode 💬
 
 For continuous back-and-forth conversation with Gemini, use the `-i` flag:
 
@@ -428,7 +462,7 @@ gemini -i
 
 This starts an interactive session where you can chat with Gemini continuously without restarting the CLI. Type `exit` or `quit` to end the session, or press `Ctrl+C` to terminate immediately.
 
-### Task Loop Mode
+### Task Loop Mode 🔁
 
 The Task Loop mode allows Gemini to work on a complex task autonomously, asking for input only when necessary:
 
@@ -438,21 +472,21 @@ gemini -t "Create a Python script that downloads weather data for London and dis
 
 In Task Loop mode:
 
-- Gemini works autonomously on your task, showing progress updates
-- It uses available tools (like accessing files or running commands) as needed
-- It only asks for input when it needs specific information from you
-- It signals completion when the task is finished or when it gets stuck
+- Gemini works autonomously on your task, showing progress updates 🏃
+- It uses available tools (like accessing files or running commands) as needed 🛠️
+- It only asks for input when it needs specific information from you 🤔
+- It signals completion when the task is finished or when it gets stuck ✅ / ❌
 
 **Flow Control Signals:**
-- When Gemini needs your input, it will pause and wait for you to respond
-- When the task is complete, you'll see a "✅ Task Complete" message with a summary
-- If Gemini gets stuck, you'll see a "❌ Task Stuck" message with the reason
+- When Gemini needs your input, it will pause and wait for you to respond ⏸️
+- When the task is complete, you'll see a "✅ Task Complete" message with a summary 🎉
+- If Gemini gets stuck, you'll see a "❌ Task Stuck" message with the reason 🤷
 
 You can exit the Task Loop at any time by typing `exit` or `quit` when prompted for input, or by pressing `Ctrl+C`.
 
 This mode is especially powerful for complex tasks that might require multiple steps, tool usage, or occasional user input.
 
-## Usage
+## 💡 Usage
 
 ```bash
 # Configure first (if needed)
@@ -489,7 +523,7 @@ gemini --show-config
 gemini --help
 ```
 
-## Development
+## 💻 Development
 
 Run directly using `cargo run`:
 
