@@ -1,4 +1,4 @@
-use crate::config::get_config_dir;
+use gemini_core::config::get_default_config_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ pub enum McpTransport {
 }
 
 pub fn get_mcp_config_path() -> io::Result<PathBuf> {
-    let config_dir = get_config_dir().map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))?;
+    let config_dir = get_default_config_dir("gemini-cli").map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))?;
     Ok(config_dir.join("mcp_servers.json"))
 }
 

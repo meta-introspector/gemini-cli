@@ -22,4 +22,4 @@ pub fn log_warning(message: &str) {
 
 pub fn log_error(message: &str) {
     eprintln!("{} {}", "[ERROR]".red().bold(), message);
-} 
+}

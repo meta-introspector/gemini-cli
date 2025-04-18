@@ -20,6 +20,18 @@ pub struct Args {
     #[arg(short, long)]
     pub task: Option<String>,
 
+    /// Maximum number of consecutive model turns in auto-continue mode
+    #[arg(long, default_value_t = 5)]
+    pub max_consecutive_turns: u32,
+
+    /// Enable auto-continue mode in interactive chats (model can continue without explicit user input)
+    #[arg(long, default_value_t = true)]
+    pub auto_continue: bool,
+
+    /// Enable progress reporting for tasks (model reports completion percentage)
+    #[arg(long, default_value_t = true)]
+    pub progress_reporting: bool,
+
     /// Set and save the Gemini API Key persistently
     #[arg(long)]
     pub set_api_key: Option<String>,
@@ -27,6 +39,10 @@ pub struct Args {
     /// Set and save the system prompt persistently
     #[arg(long)]
     pub set_system_prompt: Option<String>,
+
+    /// Set and save the model name persistently
+    #[arg(long)]
+    pub set_model: Option<String>,
 
     /// Show the current configuration
     #[arg(long, default_value_t = false)]
@@ -59,16 +75,20 @@ pub struct Args {
     /// Disable automatic memory storage
     #[arg(long, default_value_t = false)]
     pub disable_auto_memory: bool,
-
-    /// Run as a filesystem MCP server (internal use only)
+    
+    /// Run in filesystem MCP server mode
     #[arg(long, default_value_t = false)]
     pub filesystem_mcp: bool,
     
-    /// Run as a command execution MCP server (internal use only)
+    /// Run in command MCP server mode
     #[arg(long, default_value_t = false)]
     pub command_mcp: bool,
-
-    /// Run as a memory store MCP server (internal use only)
+    
+    /// Run in memory store MCP server mode
     #[arg(long, default_value_t = false)]
     pub memory_store_mcp: bool,
-} 
+
+    /// Set the embedding model variant for semantic memory search (small, base, large)
+    #[arg(long)]
+    pub embedding_model: Option<String>,
+}

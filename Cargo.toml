@@ -27,6 +27,11 @@ lazy_static = "1.4"
 ctrlc = "3.4.6"
 diffy = "0.3"
 futures-util = "0.3.31"
+async-trait = "0.1"
+# Add path dependencies to the new libraries
+gemini-core = { path = "../core" }
+gemini-mcp = { path = "../mcp" }
+gemini-memory = { path = "../memory" }
 
 [[bin]]
 name = "gemini-cli-bin"

@@ -18,6 +18,7 @@ use tokio::task;
 use serde_json::{self, json, Value};
 use log::{debug, error, info, warn};
 use futures_util::StreamExt;
+use gemini_memory::broker::{McpHostInterface, Capabilities, ToolDefinition};
 
 // Need Clone for task spawning
 #[derive(Debug, Clone)]
@@ -370,27 +371,17 @@ impl McpHost {
 
         match &result {
             Ok(value) => {
-                // Debug logging for the result structure
-                if server_name == "command" {
-                    println!("[DEBUG] Command execution result: {}", serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
-                    
-                    // Specifically check for stdout content
-                    if let Some(stdout) = value.get("stdout") {
-                        println!("[DEBUG] Command stdout: {}", stdout);
-                    } else {
-                        println!("[DEBUG] Command result has no stdout field");
-                    }
-                    
-                    // Check for command result nested inside result field
-                    if let Some(inner_result) = value.get("result") {
-                        println!("[DEBUG] Command has nested result: {}", inner_result);
-                        if let Some(inner_stdout) = inner_result.get("stdout") {
-                            println!("[DEBUG] Nested stdout: {}", inner_stdout);
-                        }
-                    }
+                // The result is already the correct value and doesn't need any additional processing
+                // No need to look for a nested 'result' field
+                if std::env::var("DEBUG").is_ok() {
+                    println!("[DEBUG] Tool execution result: {}", serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
                 }
             }
-            Err(e) => println!("[DEBUG] Command execution error: {}", e),
+            Err(e) => {
+                if std::env::var("DEBUG").is_ok() {
+                    println!("[DEBUG] Tool execution error: {}", e);
+                }
+            }
         }
 
         result
@@ -617,4 +608,86 @@ impl McpHost {
         
         Ok(())
     }
-} // impl McpHost 
+}
+
+#[async_trait::async_trait]
+impl McpHostInterface for McpHost {
+    async fn execute_tool(&self, server_name: &str, tool_name: &str, params: serde_json::Value) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        self.execute_tool(server_name, tool_name, params).await.map_err(|e| e.into())
+    }
+    
+    async fn get_all_capabilities(&self) -> Capabilities {
+        let mcap = self.get_all_capabilities().await;
+        // Convert from our internal capabilities to the memory broker interface
+        Capabilities {
+            tools: mcap.tools.into_iter().map(|tool| {
+                ToolDefinition {
+                    name: tool.name,
+                }
+            }).collect(),
+        }
+    }
+    
+    async fn send_request(&self, request: gemini_core::rpc_types::Request) -> Result<gemini_core::rpc_types::Response, gemini_core::rpc_types::JsonRpcError> {
+        // Create a new request ID
+        let request_id = self.next_request_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        
+        // Find a server to send the request to
+        // For this implementation, we'll delegate to the first available server
+        let servers = self.servers.lock().await;
+        if let Some((_, server)) = servers.iter().next() {
+            // Create a custom ExecuteToolParams that wraps the original request
+            let params = crate::mcp::rpc::ExecuteToolParams {
+                tool_name: "proxy_request".to_string(),
+                arguments: serde_json::json!({
+                    "request": request
+                }),
+            };
+            
+            // Execute via the proxy_request tool
+            match server.execute_tool(request_id, params).await {
+                Ok(response_value) => {
+                    // Convert the response JSON back to a Response object
+                    match serde_json::from_value::<gemini_core::rpc_types::Response>(response_value) {
+                        Ok(response) => Ok(response),
+                        Err(e) => Err(gemini_core::rpc_types::JsonRpcError {
+                            code: -32603,
+                            message: format!("Failed to deserialize response: {}", e),
+                            data: None,
+                        })
+                    }
+                },
+                Err(e) => Err(gemini_core::rpc_types::JsonRpcError {
+                    code: e.code,
+                    message: e.message,
+                    data: e.data,
+                })
+            }
+        } else {
+            Err(gemini_core::rpc_types::JsonRpcError {
+                code: -32603, // Internal error
+                message: "No MCP servers available".to_string(),
+                data: None,
+            })
+        }
+    }
+    
+    async fn get_capabilities(&self) -> Result<gemini_core::rpc_types::ServerCapabilities, String> {
+        // Convert from the local ServerCapabilities to gemini_core ServerCapabilities
+        let local_caps = self.get_all_capabilities().await;
+        
+        // Create a new gemini_core::rpc_types::ServerCapabilities with the converted tools
+        let core_tools = local_caps.tools.into_iter().map(|tool| {
+            gemini_core::rpc_types::Tool {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+            }
+        }).collect();
+        
+        Ok(gemini_core::rpc_types::ServerCapabilities {
+            tools: core_tools,
+            resources: Vec::new(), // No resources for now
+        })
+    }
+} 

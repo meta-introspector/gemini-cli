@@ -1,996 +1,1473 @@
 // Imports needed by the moved logic
 use crate::cli::Args;
-use crate::config::AppConfig;
 use crate::history::{
-    ChatHistory, ChatMessage, roles,
-    load_chat_history, save_chat_history,
-    start_new_chat,
-    create_system_prompt_with_history,
-    estimate_total_tokens, summarize_conversation,
-    log_history_debug, TOKEN_THRESHOLD,
+    ChatHistory, ChatMessage, TOKEN_THRESHOLD, estimate_total_tokens, load_chat_history, roles,
+    save_chat_history, start_new_chat, summarize_conversation,
 };
-use crate::logging::{log_debug, log_error, log_info, log_warning};
-use crate::mcp::host::McpHost;
-use crate::mcp::gemini::{build_mcp_system_prompt, generate_gemini_function_declarations, process_function_call};
-use crate::model::{call_gemini_api, send_function_response};
-use crate::output::{print_gemini_response, handle_command_confirmation};
-use crate::memory_broker;
-use crate::auto_memory;
+use crate::logging::{log_error, log_info, log_warning};
+use crate::output::print_gemini_response;
+use gemini_core::client::GeminiClient;
+use gemini_core::config::GeminiConfig;
+use gemini_core::types::{
+    Content, FunctionDeclaration, GenerateContentRequest, GenerationConfig, Part, Tool,
+};
+use gemini_mcp::McpHost;
 
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::Client;
-use std::env;
+use serde_json::{json, Value};
 use std::error::Error;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+// Define a context struct to hold common session parameters
+#[derive(Clone)]
+pub struct SessionContext {
+    pub config_dir: PathBuf,
+    pub session_id: String,
+    pub should_save_history: bool,
+    pub system_prompt: String,
+}
+
+/// Sanitize JSON schema to make it compatible with the Gemini API
+/// Removes fields that are not supported by Gemini
+fn sanitize_json_schema(mut schema: Value) -> Value {
+    // If it's an object, process its fields
+    if let Value::Object(ref mut obj) = schema {
+        // Remove unsupported fields at this level
+        obj.remove("default");
+        obj.remove("additionalProperties");
+        
+        // Process nested properties if any
+        if let Some(props_obj) = obj.get_mut("properties") {
+            if let Value::Object(props_map) = props_obj {
+                for (_, prop_value) in props_map.iter_mut() {
+                    // Recursively sanitize each property
+                    *prop_value = sanitize_json_schema(prop_value.clone());
+                }
+            }
+        }
+        
+        // Process items schema for arrays
+        if let Some(items) = obj.get_mut("items") {
+            *items = sanitize_json_schema(items.clone());
+        }
+    }
+    
+    schema
+}
 
 /// Processes the user's prompt and interacts with the Gemini API.
 pub async fn process_prompt(
     args: &Args,
-    config: &AppConfig,
-    client: &Client,
+    _config: &GeminiConfig,
+    gemini_client: &GeminiClient,
     mcp_host: &Option<McpHost>,
-    api_key: &str,
-    system_prompt: &str,
-    config_dir: &Path,
-    session_id: &str,
-    should_save_history: bool,
+    context: &SessionContext,
     prompt: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Start a new chat or use existing history
-    let mut chat_history = if should_save_history && !args.new_chat {
-        load_chat_history(&config_dir, &session_id)
+    let mut chat_history = if context.should_save_history && !args.new_chat {
+        load_chat_history(&context.config_dir, &context.session_id)
     } else {
-        // If history is disabled or new chat requested, start with an empty one
-        if args.new_chat && should_save_history {
-            // Clear existing history when explicitly starting a new chat
-            start_new_chat(&config_dir, &session_id);
+        if args.new_chat && context.should_save_history {
+            start_new_chat(&context.config_dir, &context.session_id);
         }
-        ChatHistory { messages: Vec::new(), session_id: session_id.to_string() }
+        ChatHistory {
+            messages: Vec::new(),
+            session_id: context.session_id.clone(),
+        }
     };
 
-    let mut mcp_capabilities_prompt = String::new();
-    let mut function_definitions = None; // For function calling
-    
+    let _mcp_capabilities_prompt = String::new();
+    let mut tools: Option<Vec<Tool>> = None;
+
     // Get MCP capabilities if host exists
     if let Some(host) = mcp_host {
         let capabilities = host.get_all_capabilities().await;
         if !capabilities.tools.is_empty() || !capabilities.resources.is_empty() {
-            log_info(&format!("MCP Capabilities discovered: {} tools, {} resources", 
-                    capabilities.tools.len(), capabilities.resources.len()));
-            
+            log_info(&format!(
+                "MCP Capabilities discovered: {} tools, {} resources",
+                capabilities.tools.len(),
+                capabilities.resources.len()
+            ));
+
             // Format capabilities for the prompt
-            mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
-            
+            // Assuming build_mcp_system_prompt is now internal or we construct it here
+            // For now, just log - system prompt enhancement needs thought
+            // mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
+
             // Generate function declarations for tools
             if !capabilities.tools.is_empty() {
-                function_definitions = generate_gemini_function_declarations(&capabilities.tools);
+                // Assuming generate_gemini_function_declarations is internal or we construct Tool here
+                // Let's try constructing the Tool struct directly
+                let declarations: Vec<FunctionDeclaration> = capabilities
+                    .tools
+                    .iter()
+                    .map(|t| {
+                        // Need sanitize_json_schema logic or assume it's done elsewhere
+                        let parameters = t
+                            .parameters
+                            .clone()
+                            .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+                        FunctionDeclaration {
+                            name: t.name.replace("/", "."), // Use dot notation for Gemini
+                            description: t.description.clone(),
+                            parameters: sanitize_json_schema(parameters),
+                        }
+                    })
+                    .collect();
+                if !declarations.is_empty() {
+                    tools = Some(vec![Tool {
+                        function_declarations: declarations,
+                    }]);
+                }
             }
         }
     }
-    
-    // Combine the user's system prompt with MCP capabilities information
-    let mut system_prompt_with_history = create_system_prompt_with_history(&system_prompt);
-    if !mcp_capabilities_prompt.is_empty() {
-        system_prompt_with_history.push_str("\n\n");
-        system_prompt_with_history.push_str(&mcp_capabilities_prompt);
-    }
-    
+
+    // TODO: Re-add mcp_capabilities_prompt to system_prompt if needed
+    let system_prompt_content = Some(Content {
+        parts: vec![Part::text(context.system_prompt.clone())],
+        role: Some("system".to_string()),
+    });
+
     // Format user prompt based on flags
     let formatted_prompt = if args.command_help {
         format!("Provide the Linux command for: {}", prompt)
     } else {
         prompt.to_string()
     };
-    
-    // Check if this is a query that's likely targeting memory MCP tools directly
-    let is_memory_tool_query = prompt.to_lowercase().contains("memory") && 
-        (prompt.to_lowercase().contains("store") || 
-         prompt.to_lowercase().contains("list") || 
-         prompt.to_lowercase().contains("update") || 
-         prompt.to_lowercase().contains("delete") || 
-         prompt.to_lowercase().contains("retrieve") ||
-         prompt.to_lowercase().contains("deduplicate"));
-    
-    // Enhance query with relevant memories if memory broker is enabled and not directly using memory tools
-    let enhanced_prompt = if config.enable_memory_broker.unwrap_or(true) && mcp_host.is_some() && !is_memory_tool_query {
-        log_debug("Memory broker is enabled, enhancing query with relevant memories");
-        
-        // First, deduplicate existing memories to maintain a clean memory store
-        // Do this occasionally to avoid overhead on every query
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        
-        // Deduplicate every ~10 queries (deterministic based on time)
-        if current_time % 10 == 0 {
-            log_debug("Performing periodic memory deduplication");
-            if let Err(e) = memory_broker::deduplicate_memories(mcp_host.as_ref().unwrap()).await {
-                log_error(&format!("Failed to deduplicate memories: {}", e));
+
+    // ---- Memory Enhancement Section (Commented Out) ----
+    // TODO: Re-implement memory enhancement using MCP tools or direct MemoryStore access
+    // let enhanced_prompt = if config.enable_memory_broker.unwrap_or(true) && mcp_host.is_some() { ... } else { formatted_prompt };
+    let enhanced_prompt = formatted_prompt; // Use original prompt for now
+    // ---- End Memory Enhancement ----
+
+    // Build message history for the API call
+    let mut messages_for_api: Vec<Content> = chat_history
+        .messages
+        .iter()
+        .map(|msg| {
+            Content {
+                parts: vec![Part::text(msg.content.clone())],
+                role: Some(msg.role.clone()), // Use role directly from history
             }
-        }
-        
-        // Then retrieve all memories
-        let memories = memory_broker::retrieve_all_memories(mcp_host.as_ref().unwrap()).await?;
-        
-        if !memories.is_empty() {
-            log_debug(&format!("Retrieved {} memories from store", memories.len()));
-            // Filter memories by relevance
-            let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
-            let relevant_memories = memory_broker::filter_relevant_memories(
-                &formatted_prompt, 
-                memories, 
-                api_key,
-                model
-            ).await?;
-            
-            if !relevant_memories.is_empty() {
-                log_debug(&format!("Found {} relevant memories for query", relevant_memories.len()));
-                // Enhance query with relevant memories
-                memory_broker::enhance_query(&formatted_prompt, relevant_memories).await
-            } else {
-                log_debug("No relevant memories found for query");
-                formatted_prompt
-            }
-        } else {
-            log_debug("No memories found in store");
-            formatted_prompt
-        }
-    } else {
-        if config.enable_memory_broker.unwrap_or(true) && is_memory_tool_query {
-            log_debug("Memory broker is enabled but skipped because the query appears to directly target memory tools");
-        }
-        formatted_prompt
-    };
-    
-    // Call Gemini API
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(ProgressStyle::default_spinner()
-        .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
-        .template("{spinner:.green} {msg}")
-        .unwrap());
-    spinner.set_message("Asking Gemini...".to_string());
-    spinner.enable_steady_tick(Duration::from_millis(80));
-    
-    // Add user message to history
+        })
+        .collect();
+
+    // Add the current user prompt
+    messages_for_api.push(Content {
+        parts: vec![Part::text(enhanced_prompt.clone())],
+        role: Some(roles::USER.to_string()),
+    });
+
+    // Add user message to local history object
     let user_message = ChatMessage {
         role: roles::USER.to_string(),
-        content: enhanced_prompt.clone(),
+        content: enhanced_prompt.clone(), // Use the (potentially enhanced) prompt
         timestamp: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
     };
     chat_history.messages.push(user_message);
-    
-    // Call API and handle response
-    match call_gemini_api(
-        client,
-        api_key,
-        Some(&system_prompt_with_history),
-        &enhanced_prompt,
-        Some(&chat_history),
-        function_definitions.clone(),
-    ).await {
-        Ok((response, function_calls)) => {
+
+    // Call Gemini API
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
+            .template("{spinner:.green} {msg}")
+            .unwrap(),
+    );
+    spinner.set_message("Asking Gemini...".to_string());
+    spinner.enable_steady_tick(Duration::from_millis(80));
+
+    let request = GenerateContentRequest {
+        contents: messages_for_api.clone(),
+        system_instruction: system_prompt_content.clone(),
+        tools: tools.clone(),
+        generation_config: Some(GenerationConfig {
+            // Enable response control tokens for more interactive conversations
+            temperature: Some(0.8),
+            top_p: Some(0.95),
+            top_k: Some(40),
+            candidate_count: Some(1),
+            max_output_tokens: Some(1024),
+            response_mime_type: Some("text/plain".to_string()),
+        }),
+    };
+
+    match gemini_client.generate_content(request).await {
+        Ok(response) => {
+            let response_text = gemini_client
+                .extract_text_from_response(&response)
+                .unwrap_or_default();
+            let function_calls = gemini_client.extract_function_calls_from_response(&response);
+
             spinner.finish_and_clear();
-            
-            // Add assistant message to history
+
+            // Add assistant message to history (initial response)
             let assistant_message = ChatMessage {
                 role: roles::ASSISTANT.to_string(),
-                content: response.clone(),
+                content: response_text.clone(), // Store the text part
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                // TODO: Potentially store function calls in history too?
+            };
+            chat_history.messages.push(assistant_message);
+
+            // ---- Auto Memory Section (Commented Out) ----
+            // TODO: Re-implement auto-memory using MCP tools or direct MemoryStore access
+            // if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() { ... }
+            // ---- End Auto Memory ----
+
+            if !function_calls.is_empty() {
+                // Process function calls
+                let mut function_responses: Vec<Part> = Vec::new();
+                for function_call in &function_calls {
+                    if let Some(host) = mcp_host {
+                        // Assuming process_function_call is now internal or needs rework
+                        // Let's directly try to execute the tool via McpHost
+                        let qualified_name = &function_call.name.replace(".", "/");
+                        let parts: Vec<&str> = qualified_name.splitn(2, "/").collect();
+                        if parts.len() == 2 {
+                            let server_name = parts[0];
+                            let tool_name = parts[1];
+                            println!(
+                                "{} Calling function {} on server {}",
+                                "Action:".blue().bold(),
+                                tool_name.cyan(),
+                                server_name.cyan()
+                            );
+                            // TODO: Add confirmation step back if needed (using handle_command_confirmation?)
+                            match host
+                                .execute_tool(
+                                    server_name,
+                                    tool_name,
+                                    function_call.arguments.clone(),
+                                )
+                                .await
+                            {
+                                Ok(result) => {
+                                    println!(
+                                        "{}: {}",
+                                        "Result".green(),
+                                        serde_json::to_string_pretty(&result)
+                                            .unwrap_or_else(|_| result.to_string())
+                                    );
+                                    function_responses.push(Part::function_response(
+                                        function_call.name.clone(),
+                                        result,
+                                    ));
+                                }
+                                Err(e) => {
+                                    log_error(&format!(
+                                        "Function call {} failed: {}",
+                                        function_call.name, e
+                                    ));
+                                    // Send back an error response to the model
+                                    function_responses.push(Part::function_response(
+                                        function_call.name.clone(),
+                                        json!({ "error": e }),
+                                    ));
+                                }
+                            }
+                        } else {
+                            log_error(&format!(
+                                "Invalid function call name format: {}",
+                                function_call.name
+                            ));
+                            function_responses.push(Part::function_response(
+                                function_call.name.clone(),
+                                json!({ "error": "Invalid function name format received." }),
+                            ));
+                        }
+                    } else {
+                        log_warning(&format!(
+                            "Received function call {} but no MCP host is available.",
+                            function_call.name
+                        ));
+                        function_responses.push(Part::function_response(
+                            function_call.name.clone(),
+                            json!({ "error": "Tool execution environment not available." }),
+                        ));
+                    }
+                }
+
+                // If we got function responses, send them back to the model
+                if !function_responses.is_empty() {
+                    spinner.set_message("Sending function results...".to_string());
+                    spinner.enable_steady_tick(Duration::from_millis(80));
+
+                    let mut messages_for_function_response = messages_for_api; // Use the history up to the user prompt
+                    // Add the assistant's first response (containing the function call)
+                    messages_for_function_response.push(Content {
+                        role: Some(roles::ASSISTANT.to_string()), // Model role
+                        parts: vec![Part {
+                            text: Some(response_text.clone()).filter(|t| !t.is_empty()),
+                            function_call: function_calls.first().cloned(),
+                            function_response: None,
+                        }],
+                    });
+                    // Add the function responses from the tool execution
+                    messages_for_function_response.push(Content {
+                        role: Some(roles::USER.to_string()), // Function role maps to User
+                        parts: function_responses,
+                    });
+
+                    let function_response_request = GenerateContentRequest {
+                        contents: messages_for_function_response,
+                        system_instruction: system_prompt_content.clone(),
+                        tools: tools.clone(),
+                        generation_config: Some(GenerationConfig {
+                            // Enable response control tokens
+                            temperature: Some(0.8),
+                            top_p: Some(0.95),
+                            top_k: Some(40),
+                            candidate_count: Some(1),
+                            max_output_tokens: Some(1024),
+                            response_mime_type: Some("text/plain".to_string()),
+                        }),
+                    };
+
+                    match gemini_client
+                        .generate_content(function_response_request)
+                        .await
+                    {
+                        Ok(final_response) => {
+                            spinner.finish_and_clear();
+                            let final_response_text = gemini_client
+                                .extract_text_from_response(&final_response)
+                                .unwrap_or_default();
+                            // Print the final response
+                            print_gemini_response(&final_response_text, args.command_help);
+
+                            // Add final assistant message to history
+                            let final_assistant_message = ChatMessage {
+                                role: roles::ASSISTANT.to_string(),
+                                content: final_response_text,
+                                timestamp: SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs(),
+                            };
+                            chat_history.messages.push(final_assistant_message);
+
+                            // ---- Final Auto Memory Check (Commented Out) ----
+                            // TODO: Re-implement auto-memory based on final response
+                            // ---- End Final Auto Memory Check ----
+                        }
+                        Err(e) => {
+                            spinner.finish_and_clear();
+                            log_error(&format!("Error sending function response: {}", e));
+                            eprintln!(
+                                "{}",
+                                format!("Error getting final response from Gemini: {}", e).red()
+                            );
+                        }
+                    }
+                }
+            } else {
+                // No function calls, just print the initial response
+                print_gemini_response(&response_text, args.command_help);
+            }
+
+            // Save history if enabled
+            if context.should_save_history {
+                // Summarization logic (needs refactor to use GeminiClient)
+                if estimate_total_tokens(&chat_history, &context.system_prompt) > TOKEN_THRESHOLD {
+                    println!(
+                        "\n{}",
+                        "Chat history is getting long. Summarizing...".cyan()
+                    );
+                    match summarize_conversation(gemini_client, &chat_history).await {
+                        // Updated call signature
+                        Ok(new_history) => {
+                            chat_history = new_history;
+                        }
+                        Err(e) => log_error(&format!("Failed to summarize history: {}", e)),
+                    }
+                }
+                if let Err(e) = save_chat_history(&context.config_dir, &chat_history) {
+                    log_error(&format!("Failed to save chat history: {}", e));
+                }
+            }
+        }
+        Err(e) => {
+            spinner.finish_and_clear();
+            log_error(&format!("Error calling Gemini API: {}", e));
+            eprintln!("{}", format!("Error calling Gemini: {}", e).red());
+        }
+    }
+
+    Ok(())
+}
+
+/// Runs an interactive chat session with model-led interaction support.
+/// The model can continue autonomously unless it signals for user input.
+pub async fn run_interactive_chat(
+    args: &Args,
+    _config: &GeminiConfig,
+    gemini_client: &GeminiClient,
+    mcp_host: &Option<McpHost>,
+    context: &SessionContext,
+) -> Result<(), Box<dyn Error>> {
+    // Show mode status with a colored banner
+    println!("{}", "╔══════════════════════════════════════════════════════════════╗".cyan());
+    println!("{}", "║              Entering interactive chat mode                  ║".cyan());
+    
+    if args.auto_continue {
+        println!("{}",
+            format!("║  [Auto-continue: ON] Model may continue without your input   ║").cyan());
+        println!("{}",
+            format!("║  Maximum consecutive model turns: {:<2}                        ║", 
+                args.max_consecutive_turns).cyan().bold());
+    } else {
+        println!("{}", "║  [Auto-continue: OFF] Model will wait for your input        ║".cyan());
+    }
+    
+    println!("{}", "║  Type 'exit' or 'quit' to end, '/help' for more commands     ║".cyan());
+    println!("{}", "╚══════════════════════════════════════════════════════════════╝".cyan());
+    
+    let mut chat_history = if context.should_save_history {
+        load_chat_history(&context.config_dir, &context.session_id)
+    } else {
+        ChatHistory {
+            messages: Vec::new(),
+            session_id: context.session_id.clone(),
+        }
+    };
+
+    // Set up MCP capabilities and construct tools
+    let mut tools: Option<Vec<Tool>> = None;
+    if let Some(host) = mcp_host {
+        let capabilities = host.get_all_capabilities().await;
+        if !capabilities.tools.is_empty() {
+            let declarations: Vec<FunctionDeclaration> = capabilities
+                .tools
+                .iter()
+                .map(|t| {
+                    let parameters = t
+                        .parameters
+                        .clone()
+                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+                    FunctionDeclaration {
+                        name: t.name.replace("/", "."),
+                        description: t.description.clone(),
+                        parameters: sanitize_json_schema(parameters),
+                    }
+                })
+                .collect();
+            if !declarations.is_empty() {
+                tools = Some(vec![Tool {
+                    function_declarations: declarations,
+                }]);
+            }
+        }
+    }
+    
+    // Enhance system prompt to instruct the model about the AWAITING_USER_RESPONSE signal
+    // TODO: In the future replace with JSON-based signals for multiple signal types
+    let enhanced_system_prompt = if args.progress_reporting {
+        format!(
+            "{}\n\nYou can continue the conversation proactively. If and only if you specifically need input or a response from the user to proceed, end your message with the exact phrase: AWAITING_USER_RESPONSE\n\nWhen working on tasks, report progress using the format: [PROGRESS: X%] where X is the percentage complete.",
+            context.system_prompt
+        )
+    } else {
+        format!(
+            "{}\n\nYou can continue the conversation proactively. If and only if you specifically need input or a response from the user to proceed, end your message with the exact phrase: AWAITING_USER_RESPONSE",
+            context.system_prompt
+        )
+    };
+    
+    let system_prompt_content = Some(Content {
+        parts: vec![Part::text(enhanced_system_prompt)],
+        role: Some("system".to_string()),
+    });
+
+    let mut consecutive_model_turns = 0;
+    let max_consecutive_turns = args.max_consecutive_turns; 
+    let mut auto_continue = args.auto_continue;
+    
+    // Track current mode to display appropriate prompt
+    #[derive(PartialEq)]
+    enum PromptMode {
+        User,       // Regular user input
+        AutoContinue, // Model is continuing automatically
+        Interrupted  // Model was interrupted
+    }
+    
+    let mut current_mode = PromptMode::User;
+
+    loop {
+        let mut input = String::new();
+        
+        match current_mode {
+            PromptMode::User => {
+                print!("{}> ", "You".green().bold());
+                io::stdout().flush()?;
+                io::stdin().read_line(&mut input)?;
+                input = input.trim().to_string();
+                
+                // Check for special command to toggle auto-continue
+                if input == "/auto" {
+                    auto_continue = !auto_continue;
+                    println!("{} Auto-continue mode is now {}",
+                        "Setting:".yellow().bold(),
+                        if auto_continue { "ON".green() } else { "OFF".red() }
+                    );
+                    continue;
+                } else if input == "/interrupt" {
+                    println!("{} Model will pause and await input", "Setting:".yellow().bold());
+                    consecutive_model_turns = max_consecutive_turns; // Force pause
+                    current_mode = PromptMode::Interrupted;
+                    continue;
+                } else if input == "/help" {
+                    println!("\n{}", "Available commands:".yellow().bold());
+                    println!("/quit, /exit - Exit the chat");
+                    println!("/auto - Toggle auto-continue mode");
+                    println!("/interrupt - Interrupt model and await input");
+                    println!("/help - Show this help message\n");
+                    continue;
+                }
+            },
+            PromptMode::AutoContinue => {
+                // Auto-continue with a simple instruction
+                input = "Continue.".to_string();
+                print!("{}> {}\n", "Auto".blue().bold(), input);
+            },
+            PromptMode::Interrupted => {
+                print!("{}> ", "Interrupted".yellow().bold());
+                io::stdout().flush()?;
+                io::stdin().read_line(&mut input)?;
+                input = input.trim().to_string();
+                current_mode = PromptMode::User;
+            }
+        }
+
+        if input == "exit" || input == "quit" || input == "/exit" || input == "/quit" {
+            break;
+        }
+
+        if input.is_empty() && current_mode == PromptMode::User {
+            continue;
+        }
+
+        // Build message history for the API call
+        let mut messages_for_api: Vec<Content> = chat_history
+            .messages
+            .iter()
+            .map(|msg| Content {
+                parts: vec![Part::text(msg.content.clone())],
+                role: Some(msg.role.clone()),
+            })
+            .collect();
+        messages_for_api.push(Content {
+            parts: vec![Part::text(input.to_string())],
+            role: Some(roles::USER.to_string()),
+        });
+
+        // Add user message to local history (if not auto-continued)
+        if current_mode != PromptMode::AutoContinue || consecutive_model_turns == 0 {
+            let user_message = ChatMessage {
+                role: roles::USER.to_string(),
+                content: input.to_string(),
                 timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs(),
             };
-            chat_history.messages.push(assistant_message);
-            
-            // Check if any function calls contain memory-related operations
-            let using_memory_tools = function_calls.iter()
-                .any(|call| call.name.to_lowercase().contains("memory"));
-            
-            // Store memory from response if auto memory is enabled
-            if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() && !using_memory_tools {
-                log_debug("Auto memory is enabled, extracting key information");
-                if let Some(api_key_str) = &config.api_key {
-                    let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
-                    
-                    // Extract key information from the conversation
-                    match auto_memory::extract_key_information(
-                        &enhanced_prompt, 
-                        &response, 
-                        api_key_str,
-                        model
-                    ).await {
-                        Ok(memories) => {
-                            if !memories.is_empty() {
-                                log_debug(&format!("Extracted {} key memories from conversation", memories.len()));
-                                // Store memories
-                                if let Err(e) = auto_memory::store_memories(memories, mcp_host.as_ref().unwrap()).await {
-                                    log_error(&format!("Failed to store memories: {}", e));
-                                }
-                            } else {
-                                log_debug("No key information found to store as memories");
-                            }
-                        },
-                        Err(e) => log_error(&format!("Failed to extract memories: {}", e))
-                    }
-                }
-            } else if config.enable_auto_memory.unwrap_or(true) && using_memory_tools {
-                log_debug("Auto memory extraction skipped because the model is directly using memory tools");
-            }
-            
-            // Process any function calls
-            for function_call in &function_calls {
-                if let Some(host) = mcp_host {
-                    match process_function_call(function_call, host).await {
-                        Ok(result) => {
-                            // Only display function result if success is false or in debug mode
-                            let should_show_result = result.get("success")
-                                .and_then(|v| v.as_bool())
-                                .map_or(true, |success| !success || std::env::var("GEMINI_DEBUG").is_ok());
-                            
-                            if should_show_result {
-                                println!("\n{}: {}", "Function result".cyan(), 
-                                         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()));
-                            }
-                            
-                            // Store the original function result for history
-                            let function_result_str = format!("Function '{}' executed successfully with result: {}", 
-                                                        function_call.name, 
-                                                        serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()));
-                            
-                            // Send the function result back to the model to get final answer - skip notification
-                            let spinner = ProgressBar::new_spinner();
-                            spinner.set_style(ProgressStyle::default_spinner()
-                                .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
-                                .template("{spinner:.green} {msg}")
-                                .unwrap());
-                            spinner.set_message("Generating response...".to_string());
-                            spinner.enable_steady_tick(Duration::from_millis(80));
-                            
-                            match send_function_response(
-                                client,
-                                api_key,
-                                Some(&system_prompt_with_history),
-                                &enhanced_prompt, // Original user prompt
-                                function_call,    // The function call made by the model
-                                result.clone(),   // The result from function execution
-                                Some(&chat_history), // Pass the chat history
-                            ).await {
-                                Ok(final_response) => {
-                                    spinner.finish_and_clear();
-                                    
-                                    // First add the function execution result to history as a system message for context
-                                    chat_history.messages.push(ChatMessage {
-                                        role: roles::SYSTEM.to_string(),
-                                        content: function_result_str,
-                                        timestamp: SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs(),
-                                    });
-                                    
-                                    // Then add the final model response to history
-                                    chat_history.messages.push(ChatMessage {
-                                        role: roles::ASSISTANT.to_string(),
-                                        content: final_response.clone(),
-                                        timestamp: SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs(),
-                                    });
-                                    
-                                    // Display the final response
-                                    if args.command_help {
-                                        // Extract command from the final response if this was a command request
-                                        let command = final_response.trim().replace("`", "");
-                                        handle_command_confirmation(&command)?;
-                                    } else {
-                                        // Display normally
-                                        print_gemini_response(&final_response, false);
-                                    }
-                                    
-                                    // Check if this was a memory-related function call
-                                    let is_memory_function = function_call.name.to_lowercase().contains("memory");
-                                    
-                                    // Store memories from the function call response
-                                    if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() && !is_memory_function {
-                                        log_debug("Auto memory is enabled, extracting key information from function response");
-                                        if let Some(api_key_str) = &config.api_key {
-                                            let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
-                                            
-                                            // Extract key information from the conversation
-                                            match auto_memory::extract_key_information(
-                                                &enhanced_prompt, 
-                                                &final_response, 
-                                                api_key_str,
-                                                model
-                                            ).await {
-                                                Ok(memories) => {
-                                                    if !memories.is_empty() {
-                                                        log_debug(&format!("Extracted {} key memories from function response", memories.len()));
-                                                        // Store memories
-                                                        if let Err(e) = auto_memory::store_memories(memories, mcp_host.as_ref().unwrap()).await {
-                                                            log_error(&format!("Failed to store memories from function response: {}", e));
-                                                        }
-                                                    } else {
-                                                        log_debug("No key information found in function response");
-                                                    }
-                                                },
-                                                Err(e) => log_error(&format!("Failed to extract memories from function response: {}", e))
-                                            }
-                                        }
-                                    } else if config.enable_auto_memory.unwrap_or(true) && is_memory_function {
-                                        log_debug("Auto memory extraction skipped because the model is directly using memory tools");
-                                    }
-                                },
-                                Err(e) => {
-                                    spinner.finish_and_clear();
-                                    eprintln!("\n{}: {}", "Failed to get final response from model".red(), e);
-                                    
-                                    // Still add the function execution to history
-                                    chat_history.messages.push(ChatMessage {
-                                        role: roles::SYSTEM.to_string(),
-                                        content: function_result_str,
-                                        timestamp: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs(),
-                                    });
-                                    
-                                    // Add an error message about the final response
-                                    let error_msg = format!("Failed to get final response from model after function execution: {}", e);
-                                    chat_history.messages.push(ChatMessage {
-                                        role: roles::SYSTEM.to_string(),
-                                        content: error_msg,
-                                        timestamp: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs(),
-                                    });
-                                    
-                                    // Continue with original response since we couldn't get the final one
-                                    if args.command_help {
-                                        let command = response.trim().replace("`", "");
-                                        handle_command_confirmation(&command)?;
-                                    } else {
-                                        print_gemini_response(&response, false);
-                                    }
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!("\n{}: {}", "Function execution error".red(), e);
-                            
-                            // Add error to history
-                            let error_msg = format!("Function '{}' execution failed: {}", function_call.name, e);
-                            chat_history.messages.push(ChatMessage {
-                                role: roles::SYSTEM.to_string(),
-                                content: error_msg,
-                                timestamp: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs(),
-                            });
-                        }
-                    }
-                }
-            }
-            
-            // Regular response handling (only show if no function calls were processed)
-            if function_calls.is_empty() {
-                if args.command_help {
-                    // Extract command from response
-                    let command = response.trim().replace("`", "");
-                    handle_command_confirmation(&command)?;
-                } else {
-                    // Display normally
-                    print_gemini_response(&response, false);
-                }
-                
-                // Store memories from the conversation
-                if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() && !using_memory_tools {
-                    log_debug("Auto memory is enabled, extracting key information");
-                    if let Some(api_key_str) = &config.api_key {
-                        let model = config.memory_broker_model.as_deref().unwrap_or("gemini-2.0-flash");
-                        
-                        // Extract key information from the conversation
-                        match auto_memory::extract_key_information(
-                            &enhanced_prompt, 
-                            &response, 
-                            api_key_str,
-                            model
-                        ).await {
-                            Ok(memories) => {
-                                if !memories.is_empty() {
-                                    log_debug(&format!("Extracted {} key memories from conversation", memories.len()));
-                                    // Store memories
-                                    if let Err(e) = auto_memory::store_memories(memories, mcp_host.as_ref().unwrap()).await {
-                                        log_error(&format!("Failed to store memories: {}", e));
-                                    }
-                                } else {
-                                    log_debug("No key information found to store as memories");
-                                }
-                            },
-                            Err(e) => log_error(&format!("Failed to extract memories: {}", e))
-                        }
-                    }
-                } else if config.enable_auto_memory.unwrap_or(true) && using_memory_tools {
-                    log_debug("Auto memory extraction skipped because the model is directly using memory tools");
-                }
-            }
-            
-            // Debug logging of history if enabled
-            if env::var("GEMINI_DEBUG").is_ok() {
-                let token_count = estimate_total_tokens(&chat_history, &system_prompt);
-                let was_summarized = chat_history.messages.iter().any(|msg| 
-                    msg.role == roles::SYSTEM && msg.content.contains("summarized version of a longer conversation"));
-                log_history_debug(&chat_history, token_count, was_summarized, &session_id);
-            }
-            
-            // Save updated history if enabled
-            if should_save_history {
-                save_chat_history(&config_dir, &chat_history)?;
-            }
-            
-            // Check if we need to summarize history
-            if should_save_history && estimate_total_tokens(&chat_history, &system_prompt) > TOKEN_THRESHOLD {
-                log_info("Chat history is getting long. Summarizing...");
-                println!("\n{}", "Chat history is getting long. Summarizing...".cyan());
-                match summarize_conversation(client, api_key, &chat_history).await {
-                    Ok(new_history) => {
-                        chat_history = new_history;
-                        save_chat_history(&config_dir, &chat_history)?;
-                        log_info("History summarized successfully");
-                        println!("{}", "History summarized successfully.".green());
-                    },
-                    Err(e) => {
-                        log_warning(&format!("Failed to summarize history: {}", e));
-                        eprintln!("{}: {}", "Failed to summarize history".red(), e);
-                    }
-                }
-            }
-        },
-        Err(e) => {
-            spinner.finish_and_clear();
-            eprintln!("{}: {}", "Error calling Gemini API".red(), e);
+            chat_history.messages.push(user_message);
         }
-    }
-    Ok(())
-}
 
-/// Runs an interactive chat session with the Gemini model.
-pub async fn run_interactive_chat(
-    args: &Args,
-    config: &AppConfig,
-    client: &Client,
-    mcp_host: &Option<McpHost>,
-    api_key: &str,
-    system_prompt: &str,
-    config_dir: &Path,
-    session_id: &str,
-    should_save_history: bool,
-) -> Result<(), Box<dyn Error>> {
-    println!("{}", "Starting interactive chat mode. Type 'exit' or 'quit' to end the session.".cyan());
-    println!("{}", "Press Ctrl+C at any time to exit.".cyan());
-    println!();
-    
-    // Start a new chat or use existing history
-    let mut chat_history = if should_save_history && !args.new_chat {
-        load_chat_history(&config_dir, &session_id)
-    } else {
-        // If history is disabled or new chat requested, start with an empty one
-        if args.new_chat && should_save_history {
-            // Clear existing history when explicitly starting a new chat
-            start_new_chat(&config_dir, &session_id);
-        }
-        ChatHistory { messages: Vec::new(), session_id: session_id.to_string() }
-    };
-    
-    let mut mcp_capabilities_prompt = String::new();
-    let mut function_definitions = None; // For function calling
-    
-    // Get MCP capabilities if host exists
-    if let Some(host) = mcp_host {
-        let capabilities = host.get_all_capabilities().await;
-        if !capabilities.tools.is_empty() || !capabilities.resources.is_empty() {
-            log_info(&format!("MCP Capabilities discovered: {} tools, {} resources", 
-                    capabilities.tools.len(), capabilities.resources.len()));
-            
-            // Format capabilities for the prompt
-            mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
-            
-            // Generate function declarations for tools
-            if !capabilities.tools.is_empty() {
-                function_definitions = generate_gemini_function_declarations(&capabilities.tools);
-            }
-        }
-    }
-    
-    // Combine the user's system prompt with MCP capabilities information
-    let mut system_prompt_with_history = create_system_prompt_with_history(&system_prompt);
-    if !mcp_capabilities_prompt.is_empty() {
-        system_prompt_with_history.push_str("\n\n");
-        system_prompt_with_history.push_str(&mcp_capabilities_prompt);
-    }
-    
-    // Main chat loop
-    loop {
-        // Prompt for user input
-        print!("{} ", "You:".green().bold());
-        io::stdout().flush()?;
-        
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        
-        // Trim the input
-        let input = input.trim();
-        
-        // Exit conditions
-        if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
-            println!("{}", "Exiting interactive mode.".cyan());
-            break;
-        }
-        
-        // Skip empty inputs
-        if input.is_empty() {
-            continue;
-        }
-        
-        // Add user message to history
-        let user_message = ChatMessage {
-            role: roles::USER.to_string(),
-            content: input.to_string(),
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        };
-        chat_history.messages.push(user_message);
-        
-        // Call API
         let spinner = ProgressBar::new_spinner();
-        spinner.set_style(ProgressStyle::default_spinner()
-            .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
-            .template("{spinner:.green} {msg}")
-            .unwrap());
-        spinner.set_message("Asking Gemini...".to_string());
-        spinner.enable_steady_tick(Duration::from_millis(80));
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
         
-        match call_gemini_api(
-            client,
-            api_key,
-            Some(&system_prompt_with_history),
-            input,
-            Some(&chat_history),
-            function_definitions.clone(),
-        ).await {
-            Ok((response, function_calls)) => {
+        spinner.set_message(match current_mode {
+            PromptMode::User => "Gemini is thinking...".to_string(),
+            PromptMode::AutoContinue => "Gemini is continuing...".to_string(),
+            PromptMode::Interrupted => "Gemini is responding...".to_string(),
+        });
+        
+        spinner.enable_steady_tick(Duration::from_millis(80));
+
+        let request = GenerateContentRequest {
+            contents: messages_for_api.clone(),
+            system_instruction: system_prompt_content.clone(),
+            tools: tools.clone(),
+            generation_config: Some(GenerationConfig {
+                // Enable response control tokens
+                temperature: Some(0.8),
+                top_p: Some(0.95),
+                top_k: Some(40),
+                candidate_count: Some(1),
+                max_output_tokens: Some(1024),
+                response_mime_type: Some("text/plain".to_string()),
+            }),
+        };
+
+        match gemini_client.generate_content(request).await {
+            Ok(response) => {
+                let mut response_text = gemini_client
+                    .extract_text_from_response(&response)
+                    .unwrap_or_default();
+                let function_calls = gemini_client.extract_function_calls_from_response(&response);
                 spinner.finish_and_clear();
                 
+                // Check for progress indicator
+                let mut progress_percentage: Option<u8> = None;
+                if args.progress_reporting {
+                    // Extract progress percentage from [PROGRESS: X%] format
+                    if let Some(start) = response_text.find("[PROGRESS:") {
+                        if let Some(end) = response_text[start..].find("]") {
+                            let progress_str = &response_text[start + 10..start + end].trim();
+                            if let Some(pct_idx) = progress_str.find('%') {
+                                if let Ok(pct) = progress_str[..pct_idx].trim().parse::<u8>() {
+                                    progress_percentage = Some(pct);
+                                    // Optionally remove the progress indicator from display
+                                    let end_pos = start + end + 1;
+                                    response_text = format!(
+                                        "{}{}",
+                                        &response_text[..start],
+                                        &response_text[end_pos..]
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Check for the signal at the end of the response
+                let awaiting_user_response = response_text.trim().ends_with("AWAITING_USER_RESPONSE");
+                
+                // Remove the signal from the displayed text if present
+                if awaiting_user_response {
+                    response_text = response_text.trim().trim_end_matches("AWAITING_USER_RESPONSE").to_string();
+                }
+
                 // Add assistant message to history
                 let assistant_message = ChatMessage {
                     role: roles::ASSISTANT.to_string(),
-                    content: response.clone(),
+                    content: response_text.clone(),
                     timestamp: SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs(),
                 };
                 chat_history.messages.push(assistant_message);
-                
-                // Print the response
-                println!("{} ", "Gemini:".blue().bold());
-                print_gemini_response(&response, false);
-                println!();
-                
-                // Handle function calls (if any)
-                for function_call in &function_calls {
-                    if let Some(host) = mcp_host {
-                        match process_function_call(function_call, host).await {
-                            Ok(result) => {
-                                println!("\n{}: {}", "Function result".cyan(), 
-                                         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()));
+
+                // Show progress bar if percentage is available
+                if let Some(pct) = progress_percentage {
+                    let width = 40;
+                    let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
+                    let empty = width - filled;
+                    
+                    println!(
+                        "{} [{}{}] {}%",
+                        "Task Progress:".yellow().bold(),
+                        "=".repeat(filled).green(),
+                        " ".repeat(empty),
+                        pct.to_string().green().bold()
+                    );
+                }
+
+                // Process function calls if any
+                if !function_calls.is_empty() {
+                    // Use our new utility for consistent tool execution across modes
+                    let mut function_responses: Vec<Part> = Vec::new();
+                    
+                    for function_call in &function_calls {
+                        if let Some(host) = mcp_host {
+                            let result = crate::utils::execute_tool_with_confirmation(
+                                host,
+                                &function_call.name,
+                                function_call.arguments.clone(),
+                                None // Use default config for now
+                            ).await;
+                            
+                            function_responses.push(
+                                crate::utils::tool_result_to_function_response(
+                                    &function_call.name, 
+                                    result
+                                )
+                            );
+                        } else {
+                            log_warning(&format!(
+                                "Received function call {} but no MCP host is available.",
+                                function_call.name
+                            ));
+                            function_responses.push(Part::function_response(
+                                function_call.name.clone(),
+                                json!({ "error": "Tool execution environment not available." }),
+                            ));
+                        }
+                    }
+
+                    if !function_responses.is_empty() {
+                        // Send function results back (similar logic)
+                        spinner.set_message("Sending function results...".to_string());
+                        spinner.enable_steady_tick(Duration::from_millis(80));
+
+                        let mut messages_for_function_response = messages_for_api;
+                        messages_for_function_response.push(Content {
+                            role: Some(roles::ASSISTANT.to_string()),
+                            parts: vec![Part {
+                                text: Some(response_text.clone()).filter(|t| !t.is_empty()),
+                                function_call: function_calls.first().cloned(),
+                                function_response: None,
+                            }],
+                        });
+                        messages_for_function_response.push(Content {
+                            role: Some(roles::USER.to_string()),
+                            parts: function_responses,
+                        });
+
+                        let function_response_request = GenerateContentRequest {
+                            contents: messages_for_function_response,
+                            system_instruction: system_prompt_content.clone(),
+                            tools: tools.clone(),
+                            generation_config: Some(GenerationConfig {
+                                // Enable response control tokens
+                                temperature: Some(0.8),
+                                top_p: Some(0.95),
+                                top_k: Some(40),
+                                candidate_count: Some(1),
+                                max_output_tokens: Some(1024),
+                                response_mime_type: Some("text/plain".to_string()),
+                            }),
+                        };
+
+                        match gemini_client
+                            .generate_content(function_response_request)
+                            .await
+                        {
+                            Ok(final_response) => {
+                                spinner.finish_and_clear();
+                                let mut final_response_text = gemini_client
+                                    .extract_text_from_response(&final_response)
+                                    .unwrap_or_default();
                                 
-                                // Store the original function result for history
-                                let function_result_str = format!("Function '{}' executed successfully with result: {}", 
-                                                            function_call.name, 
-                                                            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()));
-                                
-                                // Send the function result back to the model to get final answer
-                                let spinner = ProgressBar::new_spinner();
-                                spinner.set_style(ProgressStyle::default_spinner()
-                                    .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
-                                    .template("{spinner:.green} {msg}")
-                                    .unwrap());
-                                spinner.set_message("Generating response...".to_string());
-                                spinner.enable_steady_tick(Duration::from_millis(80));
-                                
-                                match send_function_response(
-                                    client,
-                                    api_key,
-                                    Some(&system_prompt_with_history),
-                                    input, // Original user prompt
-                                    function_call,    // The function call made by the model
-                                    result.clone(),   // The result from function execution
-                                    Some(&chat_history), // Pass the chat history
-                                ).await {
-                                    Ok(final_response) => {
-                                        spinner.finish_and_clear();
-                                        
-                                        // First add the function execution result to history as a system message for context
-                                        chat_history.messages.push(ChatMessage {
-                                            role: roles::SYSTEM.to_string(),
-                                            content: function_result_str,
-                                            timestamp: SystemTime::now()
-                                                .duration_since(UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs(),
-                                        });
-                                        
-                                        // Then add the final model response to history
-                                        chat_history.messages.push(ChatMessage {
-                                            role: roles::ASSISTANT.to_string(),
-                                            content: final_response.clone(),
-                                            timestamp: SystemTime::now()
-                                                .duration_since(UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs(),
-                                        });
-                                        
-                                        // Display the final response
-                                        println!("{} ", "Gemini (after function):".blue().bold());
-                                        print_gemini_response(&final_response, false);
-                                        println!();
-                                    },
-                                    Err(e) => {
-                                        spinner.finish_and_clear();
-                                        eprintln!("\n{}: {}", "Failed to get final response from model".red(), e);
-                                        
-                                        // Still add the function execution to history
-                                        chat_history.messages.push(ChatMessage {
-                                            role: roles::SYSTEM.to_string(),
-                                            content: function_result_str,
-                                            timestamp: std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs(),
-                                        });
+                                // Check for progress in final response
+                                let mut final_progress: Option<u8> = None;
+                                if args.progress_reporting {
+                                    if let Some(start) = final_response_text.find("[PROGRESS:") {
+                                        if let Some(end) = final_response_text[start..].find("]") {
+                                            let progress_str = &final_response_text[start + 10..start + end].trim();
+                                            if let Some(pct_idx) = progress_str.find('%') {
+                                                if let Ok(pct) = progress_str[..pct_idx].trim().parse::<u8>() {
+                                                    final_progress = Some(pct);
+                                                    // Optionally remove the progress indicator from display
+                                                    let end_pos = start + end + 1;
+                                                    final_response_text = format!(
+                                                        "{}{}",
+                                                        &final_response_text[..start],
+                                                        &final_response_text[end_pos..]
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                            },
-                            Err(e) => {
-                                eprintln!("\n{}: {}", "Function execution error".red(), e);
                                 
-                                // Add error to history
-                                let error_msg = format!("Function '{}' execution failed: {}", function_call.name, e);
-                                chat_history.messages.push(ChatMessage {
-                                    role: roles::SYSTEM.to_string(),
-                                    content: error_msg,
-                                    timestamp: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
+                                // Check for the signal in the final response
+                                let final_awaiting_user_response = 
+                                    final_response_text.trim().ends_with("AWAITING_USER_RESPONSE");
+                                
+                                // Remove the signal from the displayed text if present
+                                if final_awaiting_user_response {
+                                    final_response_text = final_response_text
+                                        .trim()
+                                        .trim_end_matches("AWAITING_USER_RESPONSE")
+                                        .to_string();
+                                }
+                                
+                                // Display gemini's avatar before response
+                                println!("{}:", "Gemini".blue().bold());
+                                print_gemini_response(&final_response_text, false);
+                                
+                                // Show final progress bar if available
+                                if let Some(pct) = final_progress {
+                                    let width = 40;
+                                    let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
+                                    let empty = width - filled;
+                                    
+                                    println!(
+                                        "{} [{}{}] {}%",
+                                        "Task Progress:".yellow().bold(),
+                                        "=".repeat(filled).green(),
+                                        " ".repeat(empty),
+                                        pct.to_string().green().bold()
+                                    );
+                                }
+                                
+                                // Add final assistant message to history
+                                let final_assistant_message = ChatMessage {
+                                    role: roles::ASSISTANT.to_string(),
+                                    content: final_response_text,
+                                    timestamp: SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
                                         .unwrap_or_default()
                                         .as_secs(),
-                                });
+                                };
+                                chat_history.messages.push(final_assistant_message);
+                                
+                                // Update auto-continue based on the final response
+                                if auto_continue && !final_awaiting_user_response {
+                                    consecutive_model_turns += 1;
+                                    if consecutive_model_turns >= max_consecutive_turns {
+                                        println!(
+                                            "{} Model has taken {} consecutive turns. Awaiting user input.",
+                                            "Notice:".yellow().bold(),
+                                            max_consecutive_turns
+                                        );
+                                        current_mode = PromptMode::User;
+                                        consecutive_model_turns = 0;
+                                    } else {
+                                        current_mode = PromptMode::AutoContinue;
+                                    }
+                                } else {
+                                    current_mode = PromptMode::User;
+                                    consecutive_model_turns = 0;
+                                }
+                            }
+                            Err(e) => {
+                                spinner.finish_and_clear();
+                                log_error(&format!("Failed to send function results: {}", e));
+                                
+                                // Display gemini's avatar before response
+                                println!("{}:", "Gemini".blue().bold());
+                                print_gemini_response(&response_text, false);
+                                
+                                current_mode = PromptMode::User; // Require user input on error
+                                consecutive_model_turns = 0;
                             }
                         }
-                    }
-                }
-                
-                // Save updated history if enabled
-                if should_save_history {
-                    save_chat_history(&config_dir, &chat_history)?;
-                }
-                
-                // Check if we need to summarize history
-                if should_save_history && estimate_total_tokens(&chat_history, &system_prompt) > TOKEN_THRESHOLD {
-                    println!("\n{}", "Chat history is getting long. Summarizing...".cyan());
-                    match summarize_conversation(client, api_key, &chat_history).await {
-                        Ok(new_history) => {
-                            chat_history = new_history;
-                            save_chat_history(&config_dir, &chat_history)?;
-                            println!("{}", "History summarized successfully.".green());
-                        },
-                        Err(e) => {
-                            eprintln!("{}: {}", "Failed to summarize history".red(), e);
+                    } else {
+                        // No function responses to send
+                        // Display gemini's avatar before response
+                        println!("{}:", "Gemini".blue().bold());
+                        print_gemini_response(&response_text, false);
+                        
+                        // Update auto-continue based on response signal
+                        if auto_continue && !awaiting_user_response {
+                            consecutive_model_turns += 1;
+                            if consecutive_model_turns >= max_consecutive_turns {
+                                println!(
+                                    "{} Model has taken {} consecutive turns. Awaiting user input.",
+                                    "Notice:".yellow().bold(),
+                                    max_consecutive_turns
+                                );
+                                current_mode = PromptMode::User;
+                                consecutive_model_turns = 0;
+                            } else {
+                                current_mode = PromptMode::AutoContinue;
+                            }
+                        } else {
+                            current_mode = PromptMode::User;
+                            consecutive_model_turns = 0;
                         }
                     }
+                } else {
+                    // No function calls to process
+                    // Display gemini's avatar before response
+                    println!("{}:", "Gemini".blue().bold());
+                    print_gemini_response(&response_text, false);
+                    
+                    // Update auto-continue based on response signal
+                    if auto_continue && !awaiting_user_response {
+                        consecutive_model_turns += 1;
+                        if consecutive_model_turns >= max_consecutive_turns {
+                            println!(
+                                "{} Model has taken {} consecutive turns. Awaiting user input.",
+                                "Notice:".yellow().bold(),
+                                max_consecutive_turns
+                            );
+                            current_mode = PromptMode::User;
+                            consecutive_model_turns = 0;
+                        } else {
+                            current_mode = PromptMode::AutoContinue;
+                        }
+                    } else {
+                        current_mode = PromptMode::User;
+                        consecutive_model_turns = 0;
+                    }
                 }
-            },
+            }
             Err(e) => {
                 spinner.finish_and_clear();
-                eprintln!("{}: {}", "Error calling Gemini API".red(), e);
+                log_error(&format!("Failed to generate content: {}", e));
+                current_mode = PromptMode::User; // Require user input on error
+                consecutive_model_turns = 0;
+            }
+        }
+
+        // Save chat history after each interaction
+        if context.should_save_history {
+            // Check if summarization is needed
+            if estimate_total_tokens(&chat_history, &context.system_prompt) > TOKEN_THRESHOLD {
+                println!(
+                    "\n{}",
+                    "Chat history is getting long. Summarizing...".cyan()
+                );
+                match summarize_conversation(gemini_client, &chat_history).await {
+                    Ok(new_history) => {
+                        chat_history = new_history;
+                    }
+                    Err(e) => log_error(&format!("Failed to summarize history: {}", e)),
+                }
+            }
+            
+            if let Err(e) = save_chat_history(&context.config_dir, &chat_history) {
+                log_error(&format!("Failed to save chat history: {}", e));
             }
         }
     }
-    
+
     Ok(())
 }
 
-/// Runs a task loop where the AI works on a specific task until completion or failure.
-pub async fn run_task_loop(
+/// Runs an interactive chat that starts with a specific task, combining interactive mode with task mode.
+/// This allows the user to guide the AI's work on a task via interactive prompts.
+pub async fn run_interactive_task_chat(
     args: &Args,
-    config: &AppConfig,
-    client: &Client,
+    config: &GeminiConfig,
+    gemini_client: &GeminiClient,
     mcp_host: &Option<McpHost>,
-    api_key: &str,
-    system_prompt: &str,
-    config_dir: &Path,
-    session_id: &str,
-    should_save_history: bool,
+    context: &SessionContext,
     task: &str,
 ) -> Result<(), Box<dyn Error>> {
-    println!("{}", "Starting task loop mode.".cyan());
-    println!("{}", "Task: ".cyan().bold().to_string() + task);
-    println!("{}", "The AI will work on this task and ask for input when needed.".cyan());
-    println!("{}", "Press Ctrl+C at any time to exit.".cyan());
-    println!();
+    // Show mode status with a colored banner
+    println!("{}", "╔══════════════════════════════════════════════════════════════╗".cyan());
+    println!("{}", "║            Entering interactive task mode                    ║".cyan());
+    println!("{}",
+        format!("║  Task: {:<50}", 
+            if task.len() > 50 { format!("{}...", &task[0..47]) } else { task.to_string() })
+            .cyan());
     
-    // Start a new chat or use existing history
-    let mut chat_history = if should_save_history && !args.new_chat {
-        load_chat_history(&config_dir, &session_id)
+    if args.auto_continue {
+        println!("{}",
+            format!("║  [Auto-continue: ON] Model may continue without your input   ║").cyan());
+        println!("{}",
+            format!("║  Maximum consecutive model turns: {:<2}                        ║", 
+                args.max_consecutive_turns).cyan().bold());
     } else {
-        // If history is disabled or new chat requested, start with an empty one
-        if args.new_chat && should_save_history {
-            // Clear existing history when explicitly starting a new chat
-            start_new_chat(&config_dir, &session_id);
-        }
-        ChatHistory { messages: Vec::new(), session_id: session_id.to_string() }
+        println!("{}", "║  [Auto-continue: OFF] Model will wait for your input        ║".cyan());
+    }
+    
+    println!("{}", "║  Type 'exit' or 'quit' to end, '/help' for more commands     ║".cyan());
+    println!("{}", "╚══════════════════════════════════════════════════════════════╝".cyan());
+    
+    // Create a modified context with enhanced system prompt for the task
+    let mut task_context = context.clone();
+    
+    // Enhanced system prompt with progress reporting if enabled
+    let task_system_prompt = if args.progress_reporting {
+        format!(
+            "{}\n\nYour current task is: {}\n\nWork on this task step by step, using available tools as needed. The user can provide guidance at any point. End your message with AWAITING_USER_RESPONSE when you need input.\n\nReport your progress using the format: [PROGRESS: X%] where X is the percentage complete.",
+            context.system_prompt,
+            task
+        )
+    } else {
+        format!(
+            "{}\n\nYour current task is: {}\n\nWork on this task step by step, using available tools as needed. The user can provide guidance at any point. End your message with AWAITING_USER_RESPONSE when you need input.",
+            context.system_prompt,
+            task
+        )
     };
     
-    let mut mcp_capabilities_prompt = String::new();
-    let mut function_definitions = None; // For function calling
+    task_context.system_prompt = task_system_prompt;
     
-    // Get MCP capabilities if host exists
-    if let Some(host) = mcp_host {
-        let capabilities = host.get_all_capabilities().await;
-        if !capabilities.tools.is_empty() || !capabilities.resources.is_empty() {
-            log_info(&format!("MCP Capabilities discovered: {} tools, {} resources", 
-                    capabilities.tools.len(), capabilities.resources.len()));
-            
-            // Format capabilities for the prompt
-            mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
-            
-            // Generate function declarations for tools
-            if !capabilities.tools.is_empty() {
-                function_definitions = generate_gemini_function_declarations(&capabilities.tools);
-            }
+    // Initialize with a task-specific prompt to start the loop
+    let mut chat_history = if context.should_save_history {
+        load_chat_history(&context.config_dir, &context.session_id)
+    } else {
+        ChatHistory {
+            messages: Vec::new(),
+            session_id: context.session_id.clone(),
         }
-    }
+    };
     
-    // Create task loop specific system prompt
-    let task_system_prompt = format!(
-        "You are operating in a task loop mode. Your objective is to complete the specified task.\n\
-        - If you need specific information from the user, ask your question clearly and end your response precisely with \"WAITING_FOR_USER_INPUT\".\n\
-        - Request tool usage when necessary. Available tools are listed in your context.\n\
-        - When the task is fully completed, include \"TASK_COMPLETE: \" followed by a summary in your response. This can be at the beginning or end of your message.\n\
-        - If you cannot complete the task, include \"TASK_STUCK: \" followed by the reason in your response. This can be at the beginning or end of your message.\n\
-        - Otherwise, provide updates on your progress and continue working autonomously.\n\n\
-        {}", system_prompt
-    );
-    
-    // Combine the task system prompt with MCP capabilities information
-    let mut full_system_prompt = task_system_prompt;
-    if !mcp_capabilities_prompt.is_empty() {
-        full_system_prompt.push_str("\n\n");
-        full_system_prompt.push_str(&mcp_capabilities_prompt);
-    }
-    
-    // Add task to history as the first user message
-    let formatted_task = format!("Start Task: {}", task);
-    let user_message = ChatMessage {
+    // Add initial task message to history
+    let initial_message = ChatMessage {
         role: roles::USER.to_string(),
-        content: formatted_task.clone(),
+        content: "Let's work on the task you've been assigned. First, please analyze what needs to be done and create a step-by-step plan.".to_string(),
         timestamp: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
     };
-    chat_history.messages.push(user_message);
+    chat_history.messages.push(initial_message);
     
-    // Main task loop
-    let mut task_complete = false;
+    // Save the modified history
+    if context.should_save_history {
+        if let Err(e) = save_chat_history(&context.config_dir, &chat_history) {
+            log_error(&format!("Failed to save chat history: {}", e));
+        }
+    }
     
-    while !task_complete {
+    // Call the regular interactive chat with the modified context
+    run_interactive_chat(
+        args,
+        config,
+        gemini_client,
+        mcp_host,
+        &task_context,
+    ).await
+}
+
+/// Runs a task loop where the AI works on a specific task until completion or failure.
+pub async fn run_task_loop(
+    args: &Args,
+    _config: &GeminiConfig,
+    gemini_client: &GeminiClient,
+    mcp_host: &Option<McpHost>,
+    context: &SessionContext,
+    task: &str,
+) -> Result<(), Box<dyn Error>> {
+    // Show mode status with a colored banner
+    println!("{}", "╔══════════════════════════════════════════════════════════════╗".cyan());
+    println!("{}", "║               Starting autonomous task mode                  ║".cyan());
+    println!("{}",
+        format!("║  Task: {:<50}", 
+            if task.len() > 50 { format!("{}...", &task[0..47]) } else { task.to_string() })
+            .cyan());
+    
+    if args.progress_reporting {
+        println!("{}", "║  [Progress Reporting: ON] Model will report task progress    ║".cyan());
+    }
+    
+    println!("{}", "║  Press Ctrl+C to stop the task                              ║".cyan());
+    println!("{}", "╚══════════════════════════════════════════════════════════════╝".cyan());
+    
+    let mut chat_history = if context.should_save_history {
+        load_chat_history(&context.config_dir, &context.session_id)
+    } else {
+        ChatHistory {
+            messages: Vec::new(),
+            session_id: context.session_id.clone(),
+        }
+    };
+
+    // TODO: Get MCP capabilities and construct system prompt + tools
+    let mut tools: Option<Vec<Tool>> = None;
+    if let Some(host) = mcp_host {
+        let capabilities = host.get_all_capabilities().await;
+        if !capabilities.tools.is_empty() {
+            let declarations: Vec<FunctionDeclaration> = capabilities
+                .tools
+                .iter()
+                .map(|t| {
+                    let parameters = t
+                        .parameters
+                        .clone()
+                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+                    FunctionDeclaration {
+                        name: t.name.replace("/", "."),
+                        description: t.description.clone(),
+                        parameters: sanitize_json_schema(parameters),
+                    }
+                })
+                .collect();
+            if !declarations.is_empty() {
+                tools = Some(vec![Tool {
+                    function_declarations: declarations,
+                }]);
+            }
+        }
+    }
+    
+    // Add task instruction to system prompt with progress reporting if enabled
+    let base_system_prompt = if args.progress_reporting {
+        format!(
+            "{}\n\nYour current task is: {}\n\nYou should work autonomously to complete this task. Use available tools as needed. Report your progress using the format: [PROGRESS: X%] where X is the percentage complete.",
+            context.system_prompt,
+            task
+        )
+    } else {
+        format!(
+            "{}\n\nYour current task is: {}\n\nYou should work autonomously to complete this task. Use available tools as needed. Provide updates on your progress.",
+            context.system_prompt,
+            task
+        )
+    };
+    
+    let full_system_prompt_content = Some(Content {
+        parts: vec![Part::text(base_system_prompt)],
+        role: Some("system".to_string()),
+    });
+
+    // Initial message to kick off the loop
+    let initial_message = "Begin working on the task.".to_string();
+    let mut latest_user_message = initial_message.clone(); // Start with the initial message
+
+    // Setup Ctrl+C handler
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+        println!("\n{}", "Task loop interrupted. Exiting...".yellow().bold());
+    })
+    .expect("Error setting Ctrl-C handler");
+
+    let mut last_progress: Option<u8> = None;
+
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        // Build message history for the API call
+        let mut messages_for_api: Vec<Content> = chat_history
+            .messages
+            .iter()
+            .map(|msg| Content {
+                parts: vec![Part::text(msg.content.clone())],
+                role: Some(msg.role.clone()),
+            })
+            .collect();
+        // Add the latest message (either initial or model's response)
+        messages_for_api.push(Content {
+            parts: vec![Part::text(latest_user_message.clone())],
+            role: Some(roles::USER.to_string()), // Treat model response as input for next step
+        });
+
+        // Add latest message to history
+        let current_message = ChatMessage {
+            role: roles::USER.to_string(), // Log it as user input for history consistency
+            content: latest_user_message.clone(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        };
+        chat_history.messages.push(current_message);
+
         let spinner = ProgressBar::new_spinner();
-        spinner.set_style(ProgressStyle::default_spinner()
-            .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
-            .template("{spinner:.green} {msg}")
-            .unwrap());
-        spinner.set_message("AI working on task...".to_string());
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+        spinner.set_message("Working on task...".to_string());
         spinner.enable_steady_tick(Duration::from_millis(80));
-        
-        // Get the latest user message from history for sending to API
-        let latest_user_message = chat_history.messages.iter()
-            .rev()
-            .find(|msg| msg.role == roles::USER)
-            .map(|msg| msg.content.clone())
-            .unwrap_or_else(|| formatted_task.clone());
-            
+
+        let request = GenerateContentRequest {
+            contents: messages_for_api.clone(),
+            system_instruction: full_system_prompt_content.clone(),
+            tools: tools.clone(),
+            generation_config: Some(GenerationConfig {
+                // Enable response control tokens
+                temperature: Some(0.8),
+                top_p: Some(0.95),
+                top_k: Some(40),
+                candidate_count: Some(1),
+                max_output_tokens: Some(1024),
+                response_mime_type: Some("text/plain".to_string()),
+            }),
+        };
+
         // Call the Gemini API
-        match call_gemini_api(
-            client,
-            api_key,
-            Some(&full_system_prompt),
-            &latest_user_message,
-            Some(&chat_history),
-            function_definitions.clone(),
-        ).await {
-            Ok((response, function_calls)) => {
+        match gemini_client.generate_content(request).await {
+            Ok(response) => {
+                let mut response_text = gemini_client
+                    .extract_text_from_response(&response)
+                    .unwrap_or_default();
+                let function_calls = gemini_client.extract_function_calls_from_response(&response);
                 spinner.finish_and_clear();
                 
+                // Check for progress indicator if enabled
+                let mut progress_percentage: Option<u8> = None;
+                if args.progress_reporting {
+                    // Extract progress percentage from [PROGRESS: X%] format
+                    if let Some(start) = response_text.find("[PROGRESS:") {
+                        if let Some(end) = response_text[start..].find("]") {
+                            let progress_str = &response_text[start + 10..start + end].trim();
+                            if let Some(pct_idx) = progress_str.find('%') {
+                                if let Ok(pct) = progress_str[..pct_idx].trim().parse::<u8>() {
+                                    progress_percentage = Some(pct);
+                                    last_progress = Some(pct);
+                                    // Optionally remove the progress indicator from display
+                                    let end_pos = start + end + 1;
+                                    response_text = format!(
+                                        "{}{}",
+                                        &response_text[..start],
+                                        &response_text[end_pos..]
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Display model's response
+                println!("{}:", "Assistant".blue().bold());
+                println!("{}", response_text);
+                
+                // Show progress bar if percentage is available
+                if let Some(pct) = progress_percentage {
+                    let width = 40;
+                    let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
+                    let empty = width - filled;
+                    
+                    println!(
+                        "{} [{}{}] {}%",
+                        "Task Progress:".yellow().bold(),
+                        "=".repeat(filled).green(),
+                        " ".repeat(empty),
+                        pct.to_string().green().bold()
+                    );
+                }
+
                 // Add assistant message to history
                 let assistant_message = ChatMessage {
                     role: roles::ASSISTANT.to_string(),
-                    content: response.clone(),
+                    content: response_text.clone(),
                     timestamp: SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs(),
                 };
                 chat_history.messages.push(assistant_message);
-                
-                // Check for task complete or stuck signal (anywhere in the response)
-                if response.contains("TASK_COMPLETE:") {
-                    println!("{} ", "✅ Task Complete:".green().bold());
-                    // If the signal is at the end, extract the completion message
-                    let completion_message = if let Some(idx) = response.find("TASK_COMPLETE:") {
-                        response[idx + "TASK_COMPLETE:".len()..].trim()
-                    } else {
-                        &response
-                    };
-                    print_gemini_response(completion_message, false);
-                    println!();
-                    task_complete = true;
-                    continue;
-                } else if response.contains("TASK_STUCK:") {
-                    println!("{} ", "❌ Task Stuck:".red().bold());
-                    // If the signal is at the end, extract the stuck message
-                    let stuck_message = if let Some(idx) = response.find("TASK_STUCK:") {
-                        response[idx + "TASK_STUCK:".len()..].trim()
-                    } else {
-                        &response
-                    };
-                    print_gemini_response(stuck_message, false);
-                    println!();
-                    task_complete = true;
-                    continue;
-                }
-                
-                // Check for waiting for user input
-                let needs_user_input = response.trim().contains("WAITING_FOR_USER_INPUT");
-                let display_response = if needs_user_input {
-                    response.replace("WAITING_FOR_USER_INPUT", "")
-                } else {
-                    response.clone()
-                };
-                
-                // Print the response
-                println!("{} ", "AI:".blue().bold());
-                print_gemini_response(&display_response, false);
-                println!();
-                
-                // Handle function calls (if any)
-                let mut function_executed = false;
-                
-                for function_call in &function_calls {
-                    function_executed = true;
-                    if let Some(host) = mcp_host {
-                        println!("{} {}", "📌 Executing function:".yellow().bold(), function_call.name);
-                        
-                        match process_function_call(function_call, host).await {
-                            Ok(result) => {
-                                println!("{}: {}", "Function result".cyan(), 
-                                         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()));
-                                
-                                // Store the function result for history
-                                let function_result_str = format!("Function '{}' executed successfully with result: {}", 
-                                                            function_call.name, 
-                                                            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()));
-                                
-                                // Add the function execution result to history as a system message
-                                chat_history.messages.push(ChatMessage {
-                                    role: roles::SYSTEM.to_string(),
-                                    content: function_result_str,
-                                    timestamp: SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs(),
-                                });
-                                
-                                // No need to process the function result further here - the next iteration will handle it
-                            },
-                            Err(e) => {
-                                eprintln!("\n{}: {}", "Function execution error".red(), e);
-                                
-                                // Add error to history
-                                let error_msg = format!("Function '{}' execution failed: {}", function_call.name, e);
-                                chat_history.messages.push(ChatMessage {
-                                    role: roles::SYSTEM.to_string(),
-                                    content: error_msg,
-                                    timestamp: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs(),
-                                });
-                            }
+
+                if !function_calls.is_empty() {
+                    // Process function calls using our shared utility
+                    let mut function_responses: Vec<Part> = Vec::new();
+
+                    // Add the assistant message containing the function call to the API message list
+                    messages_for_api.push(Content {
+                        parts: vec![Part {
+                            text: Some(response_text.clone()).filter(|t| !t.is_empty()),
+                            function_call: function_calls.first().cloned(),
+                            function_response: None,
+                        }],
+                        role: Some(roles::ASSISTANT.to_string()),
+                    });
+
+                    for function_call in &function_calls {
+                        if let Some(host) = mcp_host {
+                            // Use our new utility for consistent tool execution
+                            println!("{} Auto-executing tool in task mode", "Task:".blue().bold());
+                            
+                            let result = crate::utils::execute_tool_with_confirmation(
+                                host,
+                                &function_call.name,
+                                function_call.arguments.clone(),
+                                Some(crate::utils::ToolExecutionConfig {
+                                    // Use standard confirmation in task mode
+                                    confirmation_level: crate::utils::ConfirmationLevel::Standard,
+                                    timeout_seconds: 60, // Longer timeout for tasks
+                                    ..Default::default()
+                                })
+                            ).await;
+                            
+                            function_responses.push(
+                                crate::utils::tool_result_to_function_response(
+                                    &function_call.name, 
+                                    result
+                                )
+                            );
+                        } else {
+                            log_warning(&format!(
+                                "MCP host not available, cannot execute function: {}",
+                                function_call.name
+                            ));
+                            function_responses.push(Part::function_response(
+                                function_call.name.clone(),
+                                json!({ "error": "MCP host not available to execute function." }),
+                            ));
                         }
                     }
-                }
-                
-                // If we need user input, get it
-                if needs_user_input {
-                    print!("{} ", "You:".green().bold());
-                    io::stdout().flush()?;
-                    
-                    let mut input = String::new();
-                    io::stdin().read_line(&mut input)?;
-                    
-                    // Trim the input
-                    let input = input.trim();
-                    
-                    // Exit condition
-                    if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
-                        println!("{}", "Exiting task loop.".cyan());
-                        task_complete = true;
-                        continue;
-                    }
-                    
-                    // Add user message to history
-                    let user_message = ChatMessage {
-                        role: roles::USER.to_string(),
-                        content: format!("User Response: {}", input),
+
+                    // Add function responses to history and prepare for next API call
+                    let function_response_message = ChatMessage {
+                        role: roles::FUNCTION.to_string(),
+                        content: serde_json::to_string(&function_responses).unwrap_or_default(),
                         timestamp: SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs(),
                     };
-                    chat_history.messages.push(user_message);
-                }
-                
-                // If no function was executed and no user input needed, the model should continue
-                // This will be handled in the next loop iteration
-                
-                // Save updated history if enabled
-                if should_save_history {
-                    save_chat_history(&config_dir, &chat_history)?;
-                }
-                
-                // Check if we need to summarize history
-                if should_save_history && estimate_total_tokens(&chat_history, &system_prompt) > TOKEN_THRESHOLD {
-                    println!("\n{}", "Chat history is getting long. Summarizing...".cyan());
-                    match summarize_conversation(client, api_key, &chat_history).await {
-                        Ok(new_history) => {
-                            chat_history = new_history;
-                            save_chat_history(&config_dir, &chat_history)?;
-                            println!("{}", "History summarized successfully.".green());
-                        },
-                        Err(e) => {
-                            eprintln!("{}: {}", "Failed to summarize history".red(), e);
-                        }
+                    chat_history.messages.push(function_response_message);
+
+                    // Add the function response parts to the next API call
+                    messages_for_api.push(Content {
+                        parts: function_responses,
+                        role: Some(roles::FUNCTION.to_string()),
+                    });
+
+                    // Set up the next request with the function responses included
+                    let function_response_request = GenerateContentRequest {
+                        contents: messages_for_api.clone(),
+                        system_instruction: full_system_prompt_content.clone(),
+                        tools: tools.clone(),
+                        generation_config: Some(GenerationConfig {
+                            temperature: Some(0.8),
+                            top_p: Some(0.95),
+                            top_k: Some(40),
+                            candidate_count: Some(1),
+                            max_output_tokens: Some(1024),
+                            response_mime_type: Some("text/plain".to_string()),
+                        }),
+                    };
+
+                    // Make the follow-up API call to get response after function execution
+                    let spinner = ProgressBar::new_spinner();
+                    spinner.set_style(
+                        ProgressStyle::default_spinner()
+                            .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
+                            .template("{spinner:.green} {msg}")
+                            .unwrap(),
+                    );
+                    spinner.set_message("Processing function results...".to_string());
+                    spinner.enable_steady_tick(Duration::from_millis(80));
+
+                    match gemini_client.generate_content(function_response_request).await {
+                         Ok(final_response) => {
+                             spinner.finish_and_clear();
+                             let mut final_response_text = gemini_client
+                                 .extract_text_from_response(&final_response)
+                                 .unwrap_or_default();
+                                 
+                             // Check for progress indicator in final response
+                             let mut final_progress: Option<u8> = None;
+                             if args.progress_reporting {
+                                 if let Some(start) = final_response_text.find("[PROGRESS:") {
+                                     if let Some(end) = final_response_text[start..].find("]") {
+                                         let progress_str = &final_response_text[start + 10..start + end].trim();
+                                         if let Some(pct_idx) = progress_str.find('%') {
+                                             if let Ok(pct) = progress_str[..pct_idx].trim().parse::<u8>() {
+                                                 final_progress = Some(pct);
+                                                 last_progress = Some(pct);
+                                                 // Optionally remove the progress indicator from display
+                                                 let end_pos = start + end + 1;
+                                                 final_response_text = format!(
+                                                     "{}{}",
+                                                     &final_response_text[..start],
+                                                     &final_response_text[end_pos..]
+                                                 );
+                                             }
+                                         }
+                                     }
+                                 }
+                             }
+                             
+                             // Display the response with the assistant avatar
+                             println!("{}:", "Assistant".blue().bold());
+                             println!("{}", final_response_text);
+                             
+                             // Show progress bar if percentage is available
+                             if let Some(pct) = final_progress {
+                                 let width = 40;
+                                 let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
+                                 let empty = width - filled;
+                                 
+                                 println!(
+                                     "{} [{}{}] {}%",
+                                     "Task Progress:".yellow().bold(),
+                                     "=".repeat(filled).green(),
+                                     " ".repeat(empty),
+                                     pct.to_string().green().bold()
+                                 );
+                             }
+
+                             // Add final assistant message to history
+                             let final_assistant_message = ChatMessage {
+                                 role: roles::ASSISTANT.to_string(),
+                                 content: final_response_text.clone(),
+                                 timestamp: SystemTime::now()
+                                     .duration_since(UNIX_EPOCH)
+                                     .unwrap_or_default()
+                                     .as_secs(),
+                             };
+                             chat_history.messages.push(final_assistant_message);
+
+                             // Check if task is complete
+                             if final_response_text.contains("Task completed") || 
+                                final_response_text.contains("Task Completed") || 
+                                (final_progress.is_some() && final_progress.unwrap() >= 100) {
+                                 println!("{} Task has been completed!", "Success:".green().bold());
+                                 break;
+                             }
+
+                             // Use this final response text as input for the next loop iteration
+                             latest_user_message = final_response_text;
+                         }
+                         Err(e) => {
+                             spinner.finish_and_clear();
+                             log_error(&format!("Error sending function response: {}", e));
+                             eprintln!("{}", format!("Error getting final response after function call: {}", e).red());
+                             latest_user_message = format!("An error occurred while processing function results: {}. Please try again or continue with the task.", e);
+                         }
                     }
+                } else {
+                     // No function call, use the response text as the next input
+                     
+                     // Check if task is complete
+                     if response_text.contains("Task completed") || 
+                        response_text.contains("Task Completed") || 
+                        (progress_percentage.is_some() && progress_percentage.unwrap() >= 100) {
+                         println!("{} Task has been completed!", "Success:".green().bold());
+                         break;
+                     }
+                     
+                     latest_user_message = response_text.clone();
                 }
-                
-                // If we executed a function or got user input, continue to the next iteration
-                // Otherwise, introduce a small delay to avoid rapid API calls if the model is just giving updates
-                if !function_executed && !needs_user_input {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            },
+            }
             Err(e) => {
                 spinner.finish_and_clear();
-                eprintln!("{}: {}", "Error calling Gemini API".red(), e);
-                
-                // After an error, wait a bit before retrying
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                log_error(&format!("Error in task loop API call: {}", e));
+                eprintln!("{}", format!("API Error: {}", e).red());
+                // Retry with a message about the error
+                latest_user_message = format!("An error occurred: {}. Please try again or continue with the task.", e);
+                // Wait before retrying
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        }
+
+        // Save history if enabled
+        if context.should_save_history {
+            // Summarization logic
+            if estimate_total_tokens(&chat_history, &context.system_prompt) > TOKEN_THRESHOLD {
+                println!(
+                    "\n{}",
+                    "Chat history is getting long. Summarizing...".cyan()
+                );
+                match summarize_conversation(gemini_client, &chat_history).await {
+                    Ok(new_history) => {
+                        chat_history = new_history;
+                    }
+                    Err(e) => log_error(&format!("Failed to summarize history: {}", e)),
+                }
+            }
+            if let Err(e) = save_chat_history(&context.config_dir, &chat_history) {
+                log_error(&format!("Failed to save chat history: {}", e));
             }
         }
     }
     
+    // Show final progress indicator if available
+    if let Some(pct) = last_progress {
+        let width = 40;
+        let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
+        let empty = width - filled;
+        
+        println!(
+            "{} Final progress: [{}{}] {}%",
+            "Task Summary:".yellow().bold(),
+            "=".repeat(filled).green(),
+            " ".repeat(empty),
+            pct.to_string().green().bold()
+        );
+    }
+
     Ok(())
 }
