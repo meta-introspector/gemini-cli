@@ -14,10 +14,10 @@ mod memory;
 mod store;
 
 // Add declarations for the new modules
+pub mod arrow_conversion;
+pub mod config;
 pub mod errors;
 pub mod schema;
-pub mod config;
-pub mod arrow_conversion;
 
 pub use memory::Memory;
 pub use store::MemoryStore;

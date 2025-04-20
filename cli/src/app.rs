@@ -18,17 +18,17 @@ use crate::memory_broker::MemoryBroker;
 // Use our custom enhance_prompt function instead of the gemini-memory one
 use crate::utils::enhance_prompt;
 
+use anyhow::anyhow;
 use colored::*;
-use indicatif::{ProgressBar, ProgressStyle};
-use serde_json::json;
-use serde_json::Value;
 use gemini_core::rpc_types::ServerCapabilities;
+use indicatif::{ProgressBar, ProgressStyle};
+use serde_json::Value;
+use serde_json::json;
 use std::error::Error;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use anyhow::anyhow; // Import only the anyhow macro for error handling in execute_tool
+use std::time::{Duration, SystemTime, UNIX_EPOCH}; // Import only the anyhow macro for error handling in execute_tool
 
 // Define a context struct to hold common session parameters
 #[derive(Clone)]
@@ -78,7 +78,8 @@ pub async fn process_prompt(
         ));
 
         // Format capabilities for the prompt
-        mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
+        mcp_capabilities_prompt =
+            build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
 
         // Generate function declarations for tools
         if !capabilities.tools.is_empty() {
@@ -125,9 +126,11 @@ pub async fn process_prompt(
         match enhance_prompt(
             &formatted_prompt,
             store,
-            5, // Default top_k
+            5,   // Default top_k
             0.7, // Default min_relevance
-        ).await {
+        )
+        .await
+        {
             Ok(p) => {
                 log_info("Prompt enhanced with memory context.");
                 p
@@ -209,9 +212,9 @@ pub async fn process_prompt(
             // Add assistant message to history (initial response)
             let assistant_message_content = response_text.clone(); // Store the text part
             let assistant_message_ts = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
             let assistant_message = ChatMessage {
                 role: roles::ASSISTANT.to_string(),
                 content: assistant_message_content.clone(),
@@ -229,10 +232,24 @@ pub async fn process_prompt(
                 // Simple storage: Use prompt as key (or part of key), response as value
                 // Consider better key generation later (e.g., hash, summary)
                 let key = format!("conv_turn_{}", assistant_message_ts);
-                let value = format!("User: {}\nAssistant: {}", enhanced_prompt, assistant_message_content);
+                let value = format!(
+                    "User: {}\nAssistant: {}",
+                    enhanced_prompt, assistant_message_content
+                );
                 let tags = vec!["auto_memory".to_string(), context.session_id.clone()];
 
-                match broker.store().add_memory(&key, &value, tags, Some(context.session_id.clone()), Some("cli".to_string()), None).await {
+                match broker
+                    .store()
+                    .add_memory(
+                        &key,
+                        &value,
+                        tags,
+                        Some(context.session_id.clone()),
+                        Some("cli".to_string()),
+                        None,
+                    )
+                    .await
+                {
                     Ok(_) => log_info(&format!("Stored conversation turn with key: {}", key)),
                     Err(e) => log_error(&format!("Failed to auto-store memory: {}", e)),
                 }
@@ -258,7 +275,14 @@ pub async fn process_prompt(
                             server_name.cyan()
                         );
                         // Use the helper function with the provider directly
-                        match execute_tool(mcp_provider, server_name, tool_name, function_call.arguments.clone()).await {
+                        match execute_tool(
+                            mcp_provider,
+                            server_name,
+                            tool_name,
+                            function_call.arguments.clone(),
+                        )
+                        .await
+                        {
                             Ok(result) => {
                                 println!(
                                     "{}: {}",
@@ -291,7 +315,6 @@ pub async fn process_prompt(
                 // We might need to rethink the flow here - should we always print the initial text?
                 // For now, let's just print the initial text to avoid showing nothing.
                 print_gemini_response(&response_text, args.command_help);
-
             } else {
                 // No function calls, print the initial response directly
                 print_gemini_response(&response_text, args.command_help);
@@ -339,22 +362,45 @@ pub async fn run_interactive_chat(
     context: &SessionContext,
 ) -> Result<(), Box<dyn Error>> {
     // Show mode status with a colored banner
-    println!("{}", "╔══════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║              Entering interactive chat mode                  ║".cyan());
-    
+    println!(
+        "{}",
+        "╔══════════════════════════════════════════════════════════════╗".cyan()
+    );
+    println!(
+        "{}",
+        "║              Entering interactive chat mode                  ║".cyan()
+    );
+
     if args.auto_continue {
-        println!("{}",
-            format!("║  [Auto-continue: ON] Model may continue without your input   ║").cyan());
-        println!("{}",
-            format!("║  Maximum consecutive model turns: {:<2}                        ║", 
-                args.max_consecutive_turns).cyan().bold());
+        println!(
+            "{}",
+            format!("║  [Auto-continue: ON] Model may continue without your input   ║").cyan()
+        );
+        println!(
+            "{}",
+            format!(
+                "║  Maximum consecutive model turns: {:<2}                        ║",
+                args.max_consecutive_turns
+            )
+            .cyan()
+            .bold()
+        );
     } else {
-        println!("{}", "║  [Auto-continue: OFF] Model will wait for your input        ║".cyan());
+        println!(
+            "{}",
+            "║  [Auto-continue: OFF] Model will wait for your input        ║".cyan()
+        );
     }
-    
-    println!("{}", "║  Type 'exit' or 'quit' to end, '/help' for more commands     ║".cyan());
-    println!("{}", "╚══════════════════════════════════════════════════════════════╝".cyan());
-    
+
+    println!(
+        "{}",
+        "║  Type 'exit' or 'quit' to end, '/help' for more commands     ║".cyan()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════════════╝".cyan()
+    );
+
     let mut chat_history = if context.should_save_history {
         load_chat_history(&context.config_dir, &context.session_id)
     } else {
@@ -370,24 +416,34 @@ pub async fn run_interactive_chat(
     // REMOVE: if let Some(host) = mcp_provider {
     let capabilities = get_capabilities(mcp_provider).await;
     if !capabilities.tools.is_empty() || !capabilities.resources.is_empty() {
-        mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
-        
+        mcp_capabilities_prompt =
+            build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
+
         if !capabilities.tools.is_empty() {
-            let declarations: Vec<FunctionDeclaration> = capabilities.tools.iter().map(|t| {
-                let parameters = t.parameters.clone().unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-                FunctionDeclaration {
-                    name: t.name.replace("/", "."),
-                    description: t.description.clone(),
-                    parameters: sanitize_json_schema(parameters),
-                }
-            }).collect();
+            let declarations: Vec<FunctionDeclaration> = capabilities
+                .tools
+                .iter()
+                .map(|t| {
+                    let parameters = t
+                        .parameters
+                        .clone()
+                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+                    FunctionDeclaration {
+                        name: t.name.replace("/", "."),
+                        description: t.description.clone(),
+                        parameters: sanitize_json_schema(parameters),
+                    }
+                })
+                .collect();
             if !declarations.is_empty() {
-                tools = Some(vec![Tool { function_declarations: declarations }]);
+                tools = Some(vec![Tool {
+                    function_declarations: declarations,
+                }]);
             }
         }
     }
     // REMOVE: } // End of removed if let
-    
+
     // Combine base system prompt with MCP capabilities text
     let combined_system_prompt = format!("{}\n{}", context.system_prompt, mcp_capabilities_prompt);
     let system_prompt_content = Some(Content {
@@ -410,24 +466,32 @@ pub async fn run_interactive_chat(
 
     loop {
         let mut input = String::new();
-        
+
         match current_mode {
             PromptMode::User => {
                 print!("{}> ", "You".green().bold());
                 io::stdout().flush()?;
                 io::stdin().read_line(&mut input)?;
                 input = input.trim().to_string();
-                
+
                 // Check for special command to toggle auto-continue
                 if input == "/auto" {
                     auto_continue = !auto_continue;
-                    println!("{} Auto-continue mode is now {}",
+                    println!(
+                        "{} Auto-continue mode is now {}",
                         "Setting:".yellow().bold(),
-                        if auto_continue { "ON".green() } else { "OFF".red() }
+                        if auto_continue {
+                            "ON".green()
+                        } else {
+                            "OFF".red()
+                        }
                     );
                     continue;
                 } else if input == "/interrupt" {
-                    println!("{} Model will pause and await input", "Setting:".yellow().bold());
+                    println!(
+                        "{} Model will pause and await input",
+                        "Setting:".yellow().bold()
+                    );
                     consecutive_model_turns = max_consecutive_turns; // Force pause
                     current_mode = PromptMode::Interrupted;
                     continue;
@@ -439,12 +503,12 @@ pub async fn run_interactive_chat(
                     println!("/help - Show this help message\n");
                     continue;
                 }
-            },
+            }
             PromptMode::AutoContinue => {
                 // Auto-continue with a simple instruction
                 input = "Continue.".to_string();
                 print!("{}> {}\n", "Auto".blue().bold(), input);
-            },
+            }
             PromptMode::Interrupted => {
                 print!("{}> ", "Interrupted".yellow().bold());
                 io::stdout().flush()?;
@@ -496,13 +560,13 @@ pub async fn run_interactive_chat(
                 .template("{spinner:.green} {msg}")
                 .unwrap(),
         );
-        
+
         spinner.set_message(match current_mode {
             PromptMode::User => "Gemini is thinking...".to_string(),
             PromptMode::AutoContinue => "Gemini is continuing...".to_string(),
             PromptMode::Interrupted => "Gemini is responding...".to_string(),
         });
-        
+
         spinner.enable_steady_tick(Duration::from_millis(80));
 
         let request = GenerateContentRequest {
@@ -527,27 +591,47 @@ pub async fn run_interactive_chat(
                     .unwrap_or_default();
                 let function_calls = gemini_client.extract_function_calls_from_response(&response);
                 spinner.finish_and_clear();
-                
+
                 // --- Auto Memory (Interactive) ---
                 if function_calls.is_empty()
                     && _config.enable_auto_memory.unwrap_or(true)
                     && memory_store.is_some()
                 {
                     let broker = memory_store.as_ref().unwrap();
-                    let assistant_message_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                    let assistant_message_ts = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
                     let key = format!("conv_turn_{}", assistant_message_ts);
                     // Get the last user message from history for context
                     let last_user_input = chat_history.messages.last().map_or("", |m| &m.content);
                     let value = format!("User: {}\nAssistant: {}", last_user_input, response_text);
-                    let tags = vec!["auto_memory".to_string(), "interactive".to_string(), context.session_id.clone()];
+                    let tags = vec![
+                        "auto_memory".to_string(),
+                        "interactive".to_string(),
+                        context.session_id.clone(),
+                    ];
 
-                    match broker.store().add_memory(&key, &value, tags, Some(context.session_id.clone()), Some("cli_interactive".to_string()), None).await {
+                    match broker
+                        .store()
+                        .add_memory(
+                            &key,
+                            &value,
+                            tags,
+                            Some(context.session_id.clone()),
+                            Some("cli_interactive".to_string()),
+                            None,
+                        )
+                        .await
+                    {
                         Ok(_) => log_info(&format!("Stored interactive turn with key: {}", key)),
-                        Err(e) => log_error(&format!("Failed to auto-store interactive memory: {}", e)),
+                        Err(e) => {
+                            log_error(&format!("Failed to auto-store interactive memory: {}", e))
+                        }
                     }
                 }
-                // --- End Auto Memory --- 
-                
+                // --- End Auto Memory ---
+
                 // Check for progress indicator
                 let mut progress_percentage: Option<u8> = None;
                 if args.progress_reporting {
@@ -572,11 +656,15 @@ pub async fn run_interactive_chat(
                 }
 
                 // Check for the signal at the end of the response
-                let awaiting_user_response = response_text.trim().ends_with("AWAITING_USER_RESPONSE");
-                
+                let awaiting_user_response =
+                    response_text.trim().ends_with("AWAITING_USER_RESPONSE");
+
                 // Remove the signal from the displayed text if present
                 if awaiting_user_response {
-                    response_text = response_text.trim().trim_end_matches("AWAITING_USER_RESPONSE").to_string();
+                    response_text = response_text
+                        .trim()
+                        .trim_end_matches("AWAITING_USER_RESPONSE")
+                        .to_string();
                 }
 
                 // Add assistant message to history
@@ -595,7 +683,7 @@ pub async fn run_interactive_chat(
                     let width = 40;
                     let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
                     let empty = width - filled;
-                    
+
                     println!(
                         "{} [{}{}] {}%",
                         "Task Progress:".yellow().bold(),
@@ -614,8 +702,9 @@ pub async fn run_interactive_chat(
                             mcp_provider, // Pass the provider directly
                             &function_call.name,
                             function_call.arguments.clone(),
-                            None // Use default config for now
-                        ).await;
+                            None, // Use default config for now
+                        )
+                        .await;
                         // REMOVE: } else { ... log warning ... }
                     }
                 }
@@ -643,7 +732,7 @@ pub async fn run_interactive_chat(
                     Err(e) => log_error(&format!("Failed to summarize history: {}", e)),
                 }
             }
-            
+
             if let Err(e) = save_chat_history(&context.config_dir, &chat_history) {
                 log_error(&format!("Failed to save chat history: {}", e));
             }
@@ -665,46 +754,75 @@ pub async fn run_interactive_task_chat(
     task: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Show mode status with a colored banner
-    println!("{}", "╔══════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║            Entering interactive task mode                    ║".cyan());
-    println!("{}",
-        format!("║  Task: {:<50}", 
-            if task.len() > 50 { format!("{}...", &task[0..47]) } else { task.to_string() })
-            .cyan());
-    
+    println!(
+        "{}",
+        "╔══════════════════════════════════════════════════════════════╗".cyan()
+    );
+    println!(
+        "{}",
+        "║            Entering interactive task mode                    ║".cyan()
+    );
+    println!(
+        "{}",
+        format!(
+            "║  Task: {:<50}",
+            if task.len() > 50 {
+                format!("{}...", &task[0..47])
+            } else {
+                task.to_string()
+            }
+        )
+        .cyan()
+    );
+
     if args.auto_continue {
-        println!("{}",
-            format!("║  [Auto-continue: ON] Model may continue without your input   ║").cyan());
-        println!("{}",
-            format!("║  Maximum consecutive model turns: {:<2}                        ║", 
-                args.max_consecutive_turns).cyan().bold());
+        println!(
+            "{}",
+            format!("║  [Auto-continue: ON] Model may continue without your input   ║").cyan()
+        );
+        println!(
+            "{}",
+            format!(
+                "║  Maximum consecutive model turns: {:<2}                        ║",
+                args.max_consecutive_turns
+            )
+            .cyan()
+            .bold()
+        );
     } else {
-        println!("{}", "║  [Auto-continue: OFF] Model will wait for your input        ║".cyan());
+        println!(
+            "{}",
+            "║  [Auto-continue: OFF] Model will wait for your input        ║".cyan()
+        );
     }
-    
-    println!("{}", "║  Type 'exit' or 'quit' to end, '/help' for more commands     ║".cyan());
-    println!("{}", "╚══════════════════════════════════════════════════════════════╝".cyan());
-    
+
+    println!(
+        "{}",
+        "║  Type 'exit' or 'quit' to end, '/help' for more commands     ║".cyan()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════════════╝".cyan()
+    );
+
     // Create a modified context with enhanced system prompt for the task
     let mut task_context = context.clone();
-    
+
     // Enhanced system prompt with progress reporting if enabled
     let task_system_prompt = if args.progress_reporting {
         format!(
             "{}\n\nYour current task is: {}\n\nWork on this task step by step, using available tools as needed. The user can provide guidance at any point. End your message with AWAITING_USER_RESPONSE when you need input.\n\nReport your progress using the format: [PROGRESS: X%] where X is the percentage complete.",
-            context.system_prompt,
-            task
+            context.system_prompt, task
         )
     } else {
         format!(
             "{}\n\nYour current task is: {}\n\nWork on this task step by step, using available tools as needed. The user can provide guidance at any point. End your message with AWAITING_USER_RESPONSE when you need input.",
-            context.system_prompt,
-            task
+            context.system_prompt, task
         )
     };
-    
+
     task_context.system_prompt = task_system_prompt;
-    
+
     // Initialize with a task-specific prompt to start the loop
     let mut chat_history = if context.should_save_history {
         load_chat_history(&context.config_dir, &context.session_id)
@@ -714,7 +832,7 @@ pub async fn run_interactive_task_chat(
             session_id: context.session_id.clone(),
         }
     };
-    
+
     // Add initial task message to history
     let initial_message = ChatMessage {
         role: roles::USER.to_string(),
@@ -725,14 +843,14 @@ pub async fn run_interactive_task_chat(
             .as_secs(),
     };
     chat_history.messages.push(initial_message);
-    
+
     // Save the modified history
     if context.should_save_history {
         if let Err(e) = save_chat_history(&context.config_dir, &chat_history) {
             log_error(&format!("Failed to save chat history: {}", e));
         }
     }
-    
+
     // Call the regular interactive chat with the modified context
     run_interactive_chat(
         args,
@@ -741,7 +859,8 @@ pub async fn run_interactive_task_chat(
         mcp_provider,
         memory_store,
         &task_context,
-    ).await
+    )
+    .await
 }
 
 /// Runs a task loop where the AI works on a specific task until completion or failure.
@@ -755,20 +874,43 @@ pub async fn run_task_loop(
     task: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Show mode status with a colored banner
-    println!("{}", "╔══════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║               Starting autonomous task mode                  ║".cyan());
-    println!("{}",
-        format!("║  Task: {:<50}", 
-            if task.len() > 50 { format!("{}...", &task[0..47]) } else { task.to_string() })
-            .cyan());
-    
+    println!(
+        "{}",
+        "╔══════════════════════════════════════════════════════════════╗".cyan()
+    );
+    println!(
+        "{}",
+        "║               Starting autonomous task mode                  ║".cyan()
+    );
+    println!(
+        "{}",
+        format!(
+            "║  Task: {:<50}",
+            if task.len() > 50 {
+                format!("{}...", &task[0..47])
+            } else {
+                task.to_string()
+            }
+        )
+        .cyan()
+    );
+
     if args.progress_reporting {
-        println!("{}", "║  [Progress Reporting: ON] Model will report task progress    ║".cyan());
+        println!(
+            "{}",
+            "║  [Progress Reporting: ON] Model will report task progress    ║".cyan()
+        );
     }
-    
-    println!("{}", "║  Press Ctrl+C to stop the task                              ║".cyan());
-    println!("{}", "╚══════════════════════════════════════════════════════════════╝".cyan());
-    
+
+    println!(
+        "{}",
+        "║  Press Ctrl+C to stop the task                              ║".cyan()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════════════╝".cyan()
+    );
+
     let mut chat_history = if context.should_save_history {
         load_chat_history(&context.config_dir, &context.session_id)
     } else {
@@ -803,22 +945,20 @@ pub async fn run_task_loop(
             }]);
         }
     }
-    
+
     // Add task instruction to system prompt with progress reporting if enabled
     let base_system_prompt = if args.progress_reporting {
         format!(
             "{}\n\nYour current task is: {}\n\nYou should work autonomously to complete this task. Use available tools as needed. Report your progress using the format: [PROGRESS: X%] where X is the percentage complete.",
-            context.system_prompt,
-            task
+            context.system_prompt, task
         )
     } else {
         format!(
             "{}\n\nYour current task is: {}\n\nYou should work autonomously to complete this task. Use available tools as needed. Provide updates on your progress.",
-            context.system_prompt,
-            task
+            context.system_prompt, task
         )
     };
-    
+
     let full_system_prompt_content = Some(Content {
         parts: vec![Part::text(base_system_prompt)],
         role: Some("system".to_string()),
@@ -900,27 +1040,46 @@ pub async fn run_task_loop(
                     .unwrap_or_default();
                 let function_calls = gemini_client.extract_function_calls_from_response(&response);
                 spinner.finish_and_clear();
-                
+
                 // --- Auto Memory (Task Loop) ---
-                if function_calls.is_empty() 
-                   && _config.enable_auto_memory.unwrap_or(true)
-                   && memory_store.is_some()
+                if function_calls.is_empty()
+                    && _config.enable_auto_memory.unwrap_or(true)
+                    && memory_store.is_some()
                 {
                     let broker = memory_store.as_ref().unwrap();
-                    let assistant_message_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                    let assistant_message_ts = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
                     let key = format!("task_turn_{}", assistant_message_ts);
-                     // Get the last user message (which might be model output in task loop) for context
+                    // Get the last user message (which might be model output in task loop) for context
                     let last_input = chat_history.messages.last().map_or("", |m| &m.content);
                     let value = format!("Input: {}\nOutput: {}", last_input, response_text);
-                    let tags = vec!["auto_memory".to_string(), "task_loop".to_string(), task.to_string(), context.session_id.clone()];
+                    let tags = vec![
+                        "auto_memory".to_string(),
+                        "task_loop".to_string(),
+                        task.to_string(),
+                        context.session_id.clone(),
+                    ];
 
-                    match broker.store().add_memory(&key, &value, tags, Some(context.session_id.clone()), Some("cli_task".to_string()), None).await {
+                    match broker
+                        .store()
+                        .add_memory(
+                            &key,
+                            &value,
+                            tags,
+                            Some(context.session_id.clone()),
+                            Some("cli_task".to_string()),
+                            None,
+                        )
+                        .await
+                    {
                         Ok(_) => log_info(&format!("Stored task turn with key: {}", key)),
                         Err(e) => log_error(&format!("Failed to auto-store task memory: {}", e)),
                     }
                 }
-                // --- End Auto Memory --- 
-                
+                // --- End Auto Memory ---
+
                 // Check for progress indicator if enabled
                 let mut current_progress: Option<u8> = None;
                 if args.progress_reporting {
@@ -944,17 +1103,17 @@ pub async fn run_task_loop(
                         }
                     }
                 }
-                
+
                 // Display model's response
                 println!("{}:", "Assistant".blue().bold());
                 println!("{}", response_text);
-                
+
                 // Show progress bar if percentage is available
                 if let Some(pct) = current_progress {
                     let width = 40;
                     let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
                     let empty = width - filled;
-                    
+
                     println!(
                         "{} [{}{}] {}%",
                         "Task Progress:".yellow().bold(),
@@ -987,8 +1146,9 @@ pub async fn run_task_loop(
                                 confirmation_level: crate::utils::ConfirmationLevel::Standard,
                                 timeout_seconds: 60, // Longer timeout for tasks
                                 ..Default::default()
-                            })
-                        ).await;
+                            }),
+                        )
+                        .await;
                     }
                 }
             }
@@ -997,7 +1157,10 @@ pub async fn run_task_loop(
                 log_error(&format!("Error in task loop API call: {}", e));
                 eprintln!("{}", format!("API Error: {}", e).red());
                 // Retry with a message about the error
-                latest_user_message = format!("An error occurred: {}. Please try again or continue with the task.", e);
+                latest_user_message = format!(
+                    "An error occurred: {}. Please try again or continue with the task.",
+                    e
+                );
                 // Wait before retrying
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -1023,13 +1186,13 @@ pub async fn run_task_loop(
             }
         }
     }
-    
+
     // Show final progress indicator if available
     if let Some(pct) = progress_percentage {
         let width = 40;
         let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
         let empty = width - filled;
-        
+
         println!(
             "{} Final progress: [{}{}] {}%",
             "Task Summary:".yellow().bold(),
@@ -1044,35 +1207,34 @@ pub async fn run_task_loop(
 
 // Function to execute a tool via the appropriate provider
 async fn execute_tool(
-    provider: &McpProvider<'_>, 
-    server_name: &str, 
-    tool_name: &str, 
-    args: Value
+    provider: &McpProvider<'_>,
+    server_name: &str,
+    tool_name: &str,
+    args: Value,
 ) -> Result<Value, Box<dyn Error>> {
     match provider {
         McpProvider::Host(Some(host)) => {
             // Convert String error to anyhow::Error first, then convert to Box<dyn Error>
-            host.execute_tool(server_name, tool_name, args).await
+            host.execute_tool(server_name, tool_name, args)
+                .await
                 .map_err(|e| anyhow!(e)) // Convert String -> anyhow::Error
                 .map_err(Into::into) // Convert anyhow::Error -> Box<dyn Error>
-        },
+        }
         McpProvider::Client(client) => {
             // Convert anyhow::Error directly to Box<dyn Error>
-            client.execute_tool(server_name, tool_name, args).await
-                .map_err(Into::into) 
-        },
-        McpProvider::Host(None) => {
-            Err(anyhow!("MCP host is not available").into())
+            client
+                .execute_tool(server_name, tool_name, args)
+                .await
+                .map_err(Into::into)
         }
+        McpProvider::Host(None) => Err(anyhow!("MCP host is not available").into()),
     }
 }
 
 // Function to get capabilities from the appropriate provider
 async fn get_capabilities(provider: &McpProvider<'_>) -> ServerCapabilities {
     match provider {
-        McpProvider::Host(Some(host)) => {
-            host.get_all_capabilities().await
-        },
+        McpProvider::Host(Some(host)) => host.get_all_capabilities().await,
         McpProvider::Client(client) => {
             match client.get_all_capabilities().await {
                 Ok(caps) => caps,
@@ -1081,7 +1243,7 @@ async fn get_capabilities(provider: &McpProvider<'_>) -> ServerCapabilities {
                     ServerCapabilities::default() // Return empty capabilities on error
                 }
             }
-        },
-        McpProvider::Host(None) => ServerCapabilities::default() // Return empty capabilities if no host
+        }
+        McpProvider::Host(None) => ServerCapabilities::default(), // Return empty capabilities if no host
     }
 }

@@ -16,20 +16,20 @@ impl MemoryBroker {
         } else {
             info!("Using synchronous memory operations");
         }
-        
+
         Self {
             store,
             async_enabled,
         }
     }
-    
+
     /// Access underlying MemoryStore
     pub fn store(&self) -> &MemoryStore {
         &self.store
     }
-    
+
     /// Check if async mode is enabled
     pub fn is_async_enabled(&self) -> bool {
         self.async_enabled
     }
-} 
+}

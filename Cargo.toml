@@ -5,7 +5,13 @@ members = [
     "core",      # Core Gemini API interaction, structs, errors
     "mcp",       # MCP/Tool calling client logic
     "memory",    # Persistent memory storage logic
+    "ipc",       # Inter-process communication definitions
+    "ida",       # Internal Dialogue App daemon
+    "happe",     # Host Application Environment daemon (Placeholder)
 ]
+
+[workspace.lints]
+# Define workspace-wide lint settings here if needed
 
 [workspace.dependencies]
 # Define shared dependencies here

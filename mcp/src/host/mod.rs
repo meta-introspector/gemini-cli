@@ -10,6 +10,7 @@ use self::types::ActiveServer;
 use crate::config::{McpServerConfig, McpTransport};
 // Import specific types from gemini_core
 use crate::rpc::{self, create_log_notification};
+use async_trait::async_trait; // Needed for trait implementation
 use gemini_core::{JsonRpcError, Request, Response, ServerCapabilities}; // Removed RpcTool, Resource - not directly used here?
 use gemini_memory::broker::{self as memory_broker, McpHostInterface};
 use log::{debug, error, info, warn};
@@ -18,7 +19,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use async_trait::async_trait; // Needed for trait implementation
 use tokio::sync::Mutex;
 use tokio::task;
 
@@ -209,8 +209,8 @@ impl McpHost {
         for result in results {
             match result {
                 Ok(Ok(server_name)) => {
-                     info!("Server '{}' initialized successfully.", server_name);
-                     successful_servers.push(server_name);
+                    info!("Server '{}' initialized successfully.", server_name);
+                    successful_servers.push(server_name);
                 }
                 Ok(Err(e)) => {
                     error!("Initialization error: {}", e);
@@ -235,9 +235,12 @@ impl McpHost {
                 .collect();
 
             for name in failed_server_names {
-                 warn!("Removing server '{}' from active list due to initialization failure.", name);
-                 servers_guard.remove(&name);
-                 // Optionally trigger shutdown/cleanup for the failed server instance here if needed
+                warn!(
+                    "Removing server '{}' from active list due to initialization failure.",
+                    name
+                );
+                servers_guard.remove(&name);
+                // Optionally trigger shutdown/cleanup for the failed server instance here if needed
             }
         }
 
@@ -250,17 +253,20 @@ impl McpHost {
             );
             println!(
                 "Warning: {} MCP servers failed to initialize and will be unavailable.",
-                 failed_servers.len()
+                failed_servers.len()
             );
         }
 
         if host.servers.lock().await.is_empty() {
-             warn!("No MCP servers initialized successfully.");
-             // Decide if we should error out if NO servers are available.
-             // For now, let the host start even with zero servers.
-         }
+            warn!("No MCP servers initialized successfully.");
+            // Decide if we should error out if NO servers are available.
+            // For now, let the host start even with zero servers.
+        }
 
-        info!("MCP Host initialized with {} active servers.", host.servers.lock().await.len());
+        info!(
+            "MCP Host initialized with {} active servers.",
+            host.servers.lock().await.len()
+        );
 
         Ok(host)
     }
@@ -347,32 +353,40 @@ impl McpHost {
     // Helper method to determine the appropriate timeout for different servers/tools
     fn get_tool_timeout(&self, server_name: &str, tool_name: &str) -> Duration {
         // Check if there's an environment variable for this specific server/tool
-        let env_var_name = format!("GEMINI_MCP_TIMEOUT_{}_{}", server_name.to_uppercase(), tool_name.to_uppercase());
+        let env_var_name = format!(
+            "GEMINI_MCP_TIMEOUT_{}_{}",
+            server_name.to_uppercase(),
+            tool_name.to_uppercase()
+        );
         if let Ok(timeout_str) = std::env::var(&env_var_name) {
             if let Ok(timeout_secs) = timeout_str.parse::<u64>() {
-                debug!("Using custom timeout of {}s for {}/{} from env var {}", 
-                       timeout_secs, server_name, tool_name, env_var_name);
+                debug!(
+                    "Using custom timeout of {}s for {}/{} from env var {}",
+                    timeout_secs, server_name, tool_name, env_var_name
+                );
                 return Duration::from_secs(timeout_secs);
             }
         }
-        
+
         // Check if there's an environment variable for this server
         let env_var_name = format!("GEMINI_MCP_TIMEOUT_{}", server_name.to_uppercase());
         if let Ok(timeout_str) = std::env::var(&env_var_name) {
             if let Ok(timeout_secs) = timeout_str.parse::<u64>() {
-                debug!("Using custom timeout of {}s for {} server from env var {}", 
-                       timeout_secs, server_name, env_var_name);
+                debug!(
+                    "Using custom timeout of {}s for {} server from env var {}",
+                    timeout_secs, server_name, env_var_name
+                );
                 return Duration::from_secs(timeout_secs);
             }
         }
-        
+
         // Server-specific defaults
         match server_name {
             "embedding" => {
                 // Embedding operations can take longer, especially for large texts
                 debug!("Using extended timeout of 120s for embedding server");
                 Duration::from_secs(120) // 2 minutes for embedding operations
-            },
+            }
             _ => {
                 // Check global timeout env var
                 if let Ok(timeout_str) = std::env::var("GEMINI_MCP_TOOL_TIMEOUT") {
@@ -418,16 +432,18 @@ impl McpHost {
 
         // Get the appropriate timeout for this server/tool
         let timeout = self.get_tool_timeout(server_name, tool_name);
-        info!("Using {}s timeout for {}/{}", timeout.as_secs(), server_name, tool_name);
+        info!(
+            "Using {}s timeout for {}/{}",
+            timeout.as_secs(),
+            server_name,
+            tool_name
+        );
 
         // Send request, with timeout for response
-        let response = tokio::time::timeout(
-            timeout,
-            server.send_request(request),
-        )
-        .await
-        .map_err(|_| format!("Timeout waiting for response from server '{}'", server_name))?
-        .map_err(|e| format!("Error from server '{}': {:?}", server_name, e))?;
+        let response = tokio::time::timeout(timeout, server.send_request(request))
+            .await
+            .map_err(|_| format!("Timeout waiting for response from server '{}'", server_name))?
+            .map_err(|e| format!("Error from server '{}': {:?}", server_name, e))?;
 
         // Parse response
         match response.result() {
@@ -475,16 +491,18 @@ impl McpHost {
 
         // Get the appropriate timeout for this server/resource
         let timeout = self.get_tool_timeout(server_name, &format!("resource_{}", resource_name));
-        info!("Using {}s timeout for {}/{} resource", timeout.as_secs(), server_name, resource_name);
+        info!(
+            "Using {}s timeout for {}/{} resource",
+            timeout.as_secs(),
+            server_name,
+            resource_name
+        );
 
         // Send request, with timeout for response
-        let response = tokio::time::timeout(
-            timeout,
-            server.send_request(request),
-        )
-        .await
-        .map_err(|_| format!("Timeout waiting for response from server '{}'", server_name))?
-        .map_err(|e| format!("Error from server '{}': {:?}", server_name, e))?;
+        let response = tokio::time::timeout(timeout, server.send_request(request))
+            .await
+            .map_err(|_| format!("Timeout waiting for response from server '{}'", server_name))?
+            .map_err(|e| format!("Error from server '{}': {:?}", server_name, e))?;
 
         // Parse response
         match response.result() {
@@ -533,20 +551,26 @@ impl McpHost {
                 {
                     Ok(send_result) => match send_result {
                         Ok(response) => {
-                            info!("Received shutdown response from MCP server '{}': {:?}", server_name, response);
+                            info!(
+                                "Received shutdown response from MCP server '{}': {:?}",
+                                server_name, response
+                            );
 
                             // Wait a moment for graceful shutdown
                             tokio::time::sleep(Duration::from_secs(1)).await;
 
                             // Send exit notification
-                            let exit_notification = crate::rpc::Notification::new(
-                                "exit".into(),
-                                None,
-                            );
+                            let exit_notification =
+                                crate::rpc::Notification::new("exit".into(), None);
 
                             match server.send_notification(exit_notification).await {
-                                Ok(_) => info!("Sent exit notification to MCP server '{}'", server_name),
-                                Err(e) => warn!("Failed to send exit notification to MCP server '{}': {}", server_name, e),
+                                Ok(_) => {
+                                    info!("Sent exit notification to MCP server '{}'", server_name)
+                                }
+                                Err(e) => warn!(
+                                    "Failed to send exit notification to MCP server '{}': {}",
+                                    server_name, e
+                                ),
                             }
 
                             // Additional grace period
@@ -720,33 +744,53 @@ impl McpHostInterface for McpHost {
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         self.execute_tool(server_name, tool_name, params)
             .await
-            .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)) as Box<dyn std::error::Error>)
+            .map_err(|e| {
+                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))
+                    as Box<dyn std::error::Error>
+            })
     }
 
     // Implement get_all_capabilities using the existing method
     async fn get_all_capabilities(&self) -> memory_broker::Capabilities {
         let host_caps = self.get_all_capabilities().await;
         // Convert host_caps (Vec<Tool>) to memory_broker::Capabilities (BrokerCapabilities { tools: Vec<BrokerToolDefinition> })
-        let broker_tools = host_caps.tools.into_iter().map(|rpc_tool| {
-            memory_broker::ToolDefinition {
-                name: rpc_tool.name, // Use the tool name directly from RpcTool
-                // description: tool.description, // Assuming BrokerToolDefinition might need description
-                // parameters: tool.parameters, // Assuming BrokerToolDefinition might need parameters
-            }
-        }).collect();
+        let broker_tools = host_caps
+            .tools
+            .into_iter()
+            .map(|rpc_tool| {
+                memory_broker::ToolDefinition {
+                    name: rpc_tool.name, // Use the tool name directly from RpcTool
+                                         // description: tool.description, // Assuming BrokerToolDefinition might need description
+                                         // parameters: tool.parameters, // Assuming BrokerToolDefinition might need parameters
+                }
+            })
+            .collect();
 
-        memory_broker::Capabilities { tools: broker_tools }
+        memory_broker::Capabilities {
+            tools: broker_tools,
+        }
     }
 
     // Implement send_request using the internal helper
     async fn send_request(&self, request: Request) -> Result<Response, JsonRpcError> {
-        let server_name = request.params.as_ref()
+        let server_name = request
+            .params
+            .as_ref()
             .and_then(|p| p.get("server_name"))
             .and_then(|s| s.as_str())
-            .ok_or_else(|| JsonRpcError { code: -32602, message: "Missing server_name in params".to_string(), data: None })?;
+            .ok_or_else(|| JsonRpcError {
+                code: -32602,
+                message: "Missing server_name in params".to_string(),
+                data: None,
+            })?;
 
-        let active_server = McpHost::find_ready_server(&self.servers, server_name).await
-             .map_err(|e| JsonRpcError { code: -32603, message: e, data: None })?;
+        let active_server = McpHost::find_ready_server(&self.servers, server_name)
+            .await
+            .map_err(|e| JsonRpcError {
+                code: -32603,
+                message: e,
+                data: None,
+            })?;
 
         active_server.send_request(request).await
     }
@@ -755,11 +799,11 @@ impl McpHostInterface for McpHost {
     // The trait definition seems generic, maybe it should take server_name?
     // For now, let's return combined caps, though this might not be right.
     async fn get_capabilities(&self) -> Result<ServerCapabilities, String> {
-         // This implementation gets *combined* capabilities, which might not match
-         // the intent if the trait method was meant for a specific server.
-         // If it needs specific server caps, the trait or this impl needs adjustment.
-         warn!("McpHostInterface::get_capabilities returning combined capabilities, not server-specific.");
-         let combined = self.get_all_capabilities().await;
-         Ok(combined)
-     }
+        // This implementation gets *combined* capabilities, which might not match
+        // the intent if the trait method was meant for a specific server.
+        // If it needs specific server caps, the trait or this impl needs adjustment.
+        warn!("McpHostInterface::get_capabilities returning combined capabilities, not server-specific.");
+        let combined = self.get_all_capabilities().await;
+        Ok(combined)
+    }
 }

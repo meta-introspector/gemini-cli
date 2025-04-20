@@ -65,7 +65,10 @@ pub fn create_schema(embedding_dim: usize) -> SchemaRef {
         // Vector field for embeddings - dimension depends on model variant
         Field::new(
             "vector",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), embedding_dim as i32),
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                embedding_dim as i32,
+            ),
             true, // Nullable for now, until embedding generation is integrated
         ),
         // Add optional token count field
@@ -80,4 +83,4 @@ pub fn create_schema(embedding_dim: usize) -> SchemaRef {
         ),
         Field::new("confidence_score", DataType::Float32, true),
     ]))
-} 
+}

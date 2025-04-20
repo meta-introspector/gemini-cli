@@ -22,4 +22,4 @@ pub enum MemoryStoreError {
     TableNotFound(String),
     #[error("Search error: {0}")]
     Search(String),
-} 
+}

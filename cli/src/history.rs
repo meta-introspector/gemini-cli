@@ -448,9 +448,11 @@ pub async fn summarize_conversation(
                 .rev()
                 .find(|msg| msg.role == roles::USER)
             {
-                if new_history.messages.last().is_none_or(|last_summary| {
-                    last_summary.timestamp < last_user_message.timestamp
-                }) {
+                if new_history
+                    .messages
+                    .last()
+                    .is_none_or(|last_summary| last_summary.timestamp < last_user_message.timestamp)
+                {
                     new_history.messages.push(last_user_message.clone());
                 }
             }
@@ -461,9 +463,11 @@ pub async fn summarize_conversation(
                 .rev()
                 .find(|msg| msg.role == roles::ASSISTANT)
             {
-                if new_history.messages.last().is_none_or(|last| {
-                    last.timestamp < last_assistant_message.timestamp
-                }) {
+                if new_history
+                    .messages
+                    .last()
+                    .is_none_or(|last| last.timestamp < last_assistant_message.timestamp)
+                {
                     new_history.messages.push(last_assistant_message.clone());
                 }
             }

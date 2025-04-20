@@ -1,9 +1,9 @@
-use serde::{ Deserialize, Serialize };
-use serde_json::{ json, Value };
-use std::fs;
-use std::path::{ Path, PathBuf };
-use std::io::{ self, Read, Write, BufRead };
 use diffy;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::fs;
+use std::io::{self, BufRead, Read, Write};
+use std::path::{Path, PathBuf};
 
 // JSON-RPC 2.0 structures
 #[derive(Serialize, Deserialize, Debug)]
@@ -165,7 +165,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 name: "file_info".to_string(),
                 description: "Gets information about a file or directory.".to_string(),
                 schema: None,
-            }
+            },
         ];
         let resources = vec![
             Resource {
@@ -177,22 +177,23 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 name: "home_directory".to_string(),
                 description: "Gets the user's home directory.".to_string(),
                 schema: None,
-            }
+            },
         ];
         let capabilities = ServerCapabilities { tools, resources };
-        let init_result = InitializeResult { server_info, capabilities };
+        let init_result = InitializeResult {
+            server_info,
+            capabilities,
+        };
 
         let response = Response {
             jsonrpc: "2.0".to_string(),
             // Assuming a common ID pattern or using a fixed one for the proactive response
             id: json!(1), // Use the typical ID for filesystem server if known, otherwise a placeholder
-            result: Some(
-                json!({
+            result: Some(json!({
                 "serverInfo": init_result.server_info,
                 "capabilities": init_result.capabilities,
                 "status": "initialized"
-            })
-            ),
+            })),
             error: None,
         };
 
@@ -203,7 +204,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     response_json.len(),
                     response_json
                 );
-                println!("Sending early init response ({} bytes)", response_json.len());
+                println!(
+                    "Sending early init response ({} bytes)",
+                    response_json.len()
+                );
                 if let Err(e) = stdout.write_all(message.as_bytes()) {
                     eprintln!("Failed to write early init response: {}", e);
                     // Decide if we should exit or just log
@@ -323,7 +327,7 @@ async fn process_stdin() -> Result<(), String> {
                     // Parse the request first to check the method
                     let request_peek: Result<Request, _> = serde_json::from_str(&json_str);
                     let mut should_shutdown = false;
-                    
+
                     if let Ok(ref req) = request_peek {
                         if req.method == "shutdown" {
                             should_shutdown = true;
@@ -355,8 +359,7 @@ async fn process_stdin() -> Result<(), String> {
             }
         } else {
             // Send error response about missing Content-Length
-            let error_response =
-                json!({
+            let error_response = json!({
                 "jsonrpc": "2.0",
                 "id": null,
                 "error": {
@@ -365,8 +368,7 @@ async fn process_stdin() -> Result<(), String> {
                 }
             });
 
-            let response_json = serde_json
-                ::to_string(&error_response)
+            let response_json = serde_json::to_string(&error_response)
                 .map_err(|e| format!("Failed to serialize error response: {}", e))?;
 
             // Write response with proper Content-Length framing
@@ -393,7 +395,10 @@ async fn process_stdin() -> Result<(), String> {
 async fn process_message(json_str: &str, stdout: &mut impl Write) -> Result<(), String> {
     match serde_json::from_str::<Request>(json_str) {
         Ok(request) => {
-            println!("Received request method: {} (ID: {:?})", request.method, request.id);
+            println!(
+                "Received request method: {} (ID: {:?})",
+                request.method, request.id
+            );
 
             match request.method.as_str() {
                 "initialize" => handle_initialize(request, stdout).await,
@@ -415,8 +420,9 @@ async fn process_message(json_str: &str, stdout: &mut impl Write) -> Result<(), 
                             code: -32601,
                             message: format!("Method not found: {}", request.method),
                             data: None,
-                        })
-                    ).await
+                        }),
+                    )
+                    .await
                 }
             }
         }
@@ -430,8 +436,9 @@ async fn process_message(json_str: &str, stdout: &mut impl Write) -> Result<(), 
                     code: -32700,
                     message: format!("Parse error: {}", e),
                     data: None,
-                })
-            ).await
+                }),
+            )
+            .await
         }
     }
 }
@@ -450,8 +457,7 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
         Tool {
             name: "list_directory".to_string(),
             description: "Lists contents of a directory.".to_string(),
-            schema: Some(
-                json!({
+            schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "path": {
@@ -465,14 +471,13 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
                     }
                 },
                 "required": ["path"]
-            })
-            ),
+            })),
         },
         Tool {
             name: "read_file".to_string(),
-            description: "Reads content of a file, optionally a specific range of lines.".to_string(),
-            schema: Some(
-                json!({
+            description: "Reads content of a file, optionally a specific range of lines."
+                .to_string(),
+            schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "path": {
@@ -489,14 +494,13 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
                     }
                 },
                 "required": ["path"]
-            })
-            ),
+            })),
         },
         Tool {
             name: "write_file".to_string(),
-            description: "Writes content to a file, optionally creating it if it doesn't exist.".to_string(),
-            schema: Some(
-                json!({
+            description: "Writes content to a file, optionally creating it if it doesn't exist."
+                .to_string(),
+            schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "path": {
@@ -519,14 +523,12 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
                     }
                 },
                 "required": ["path", "content"]
-            })
-            ),
+            })),
         },
         Tool {
             name: "apply_patch".to_string(),
             description: "Applies a patch to a file.".to_string(),
-            schema: Some(
-                json!({
+            schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "path": {
@@ -539,14 +541,12 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
                     }
                 },
                 "required": ["path", "patch"]
-            })
-            ),
+            })),
         },
         Tool {
             name: "delete".to_string(),
             description: "Deletes a file or directory.".to_string(),
-            schema: Some(
-                json!({
+            schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "path": {
@@ -560,14 +560,12 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
                     }
                 },
                 "required": ["path"]
-            })
-            ),
+            })),
         },
         Tool {
             name: "create_directory".to_string(),
             description: "Creates a directory.".to_string(),
-            schema: Some(
-                json!({
+            schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "path": {
@@ -581,14 +579,12 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
                     }
                 },
                 "required": ["path"]
-            })
-            ),
+            })),
         },
         Tool {
             name: "rename".to_string(),
             description: "Renames a file or directory.".to_string(),
-            schema: Some(
-                json!({
+            schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "from": {
@@ -601,14 +597,12 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
                     }
                 },
                 "required": ["from", "to"]
-            })
-            ),
+            })),
         },
         Tool {
             name: "file_info".to_string(),
             description: "Gets information about a file or directory.".to_string(),
-            schema: Some(
-                json!({
+            schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "path": {
@@ -617,9 +611,8 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
                     }
                 },
                 "required": ["path"]
-            })
-            ),
-        }
+            })),
+        },
     ];
 
     // Define resources
@@ -633,38 +626,43 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
             name: "home_directory".to_string(),
             description: "Gets the user's home directory.".to_string(),
             schema: None,
-        }
+        },
     ];
 
     // Create capabilities object
-    let capabilities = ServerCapabilities {
-        tools,
-        resources,
-    };
+    let capabilities = ServerCapabilities { tools, resources };
 
     // Create response with proper format
     let response = Response {
         jsonrpc: "2.0".to_string(),
         id: request.id.unwrap_or(json!(null)),
-        result: Some(
-            json!({
+        result: Some(json!({
             "serverInfo": server_info,
             "capabilities": capabilities,
             "status": "initialized"
-        })
-        ),
+        })),
         error: None,
     };
 
     // Serialize and send the response with proper headers
-    let response_json = serde_json
-        ::to_string(&response)
+    let response_json = serde_json::to_string(&response)
         .map_err(|e| format!("Failed to serialize response: {}", e))?;
 
-    println!("Sending initialization response (length: {})", response_json.len());
-    let message = format!("Content-Length: {}\r\n\r\n{}", response_json.len(), response_json);
-    stdout.write_all(message.as_bytes()).map_err(|e| format!("Failed to write response: {}", e))?;
-    stdout.flush().map_err(|e| format!("Failed to flush output: {}", e))?;
+    println!(
+        "Sending initialization response (length: {})",
+        response_json.len()
+    );
+    let message = format!(
+        "Content-Length: {}\r\n\r\n{}",
+        response_json.len(),
+        response_json
+    );
+    stdout
+        .write_all(message.as_bytes())
+        .map_err(|e| format!("Failed to write response: {}", e))?;
+    stdout
+        .flush()
+        .map_err(|e| format!("Failed to flush output: {}", e))?;
 
     println!("Initialization response sent successfully");
     Ok(())
@@ -672,7 +670,7 @@ async fn handle_initialize(request: Request, stdout: &mut impl Write) -> Result<
 
 async fn handle_shutdown(request: Request, stdout: &mut impl Write) -> Result<(), String> {
     println!("Received shutdown request (ID: {:?})", request.id);
-    
+
     // Explicitly create the response
     let response = Response {
         jsonrpc: "2.0".to_string(),
@@ -680,7 +678,7 @@ async fn handle_shutdown(request: Request, stdout: &mut impl Write) -> Result<()
         result: Some(json!(null)),
         error: None,
     };
-    
+
     // Serialize and format with Content-Length header
     let json_str = match serde_json::to_string(&response) {
         Ok(s) => s,
@@ -689,12 +687,12 @@ async fn handle_shutdown(request: Request, stdout: &mut impl Write) -> Result<()
             return Err(format!("Failed to serialize shutdown response: {}", e));
         }
     };
-    
+
     let message = format!("Content-Length: {}\r\n\r\n{}", json_str.len(), json_str);
-    
+
     // Log the response being sent
     println!("Sending shutdown response: {}", json_str);
-    
+
     // Write and explicitly flush
     match stdout.write_all(message.as_bytes()) {
         Ok(_) => println!("Shutdown response written"),
@@ -703,12 +701,12 @@ async fn handle_shutdown(request: Request, stdout: &mut impl Write) -> Result<()
             return Err(format!("Failed to write shutdown response: {}", e));
         }
     }
-    
+
     match stdout.flush() {
         Ok(_) => {
             println!("Shutdown response sent successfully");
             Ok(())
-        },
+        }
         Err(e) => {
             eprintln!("Failed to flush shutdown response: {}", e);
             Err(format!("Failed to flush shutdown response: {}", e))
@@ -718,15 +716,17 @@ async fn handle_shutdown(request: Request, stdout: &mut impl Write) -> Result<()
 
 async fn handle_execute_tool(request: Request, stdout: &mut impl Write) -> Result<(), String> {
     let params: ExecuteToolParams = match request.params {
-        Some(p) =>
-            serde_json::from_value(p).map_err(|e| format!("Invalid execute tool params: {}", e))?,
+        Some(p) => {
+            serde_json::from_value(p).map_err(|e| format!("Invalid execute tool params: {}", e))?
+        }
         None => {
             return send_error(
                 stdout,
                 request.id.unwrap_or(json!(null)),
                 -32602,
-                "Missing params for tool/execute"
-            ).await;
+                "Missing params for tool/execute",
+            )
+            .await;
         }
     };
 
@@ -741,42 +741,50 @@ async fn handle_execute_tool(request: Request, stdout: &mut impl Write) -> Resul
         "create_directory" => execute_create_directory(params.arguments, request_id, stdout).await,
         "rename" => execute_rename(params.arguments, request_id, stdout).await,
         "file_info" => execute_file_info(params.arguments, request_id, stdout).await,
-        _ =>
+        _ => {
             send_error(
                 stdout,
                 request_id,
                 -32601,
-                &format!("Tool not found: {}", params.tool_name)
-            ).await,
+                &format!("Tool not found: {}", params.tool_name),
+            )
+            .await
+        }
     }
 }
 
 async fn handle_get_resource(request: Request, stdout: &mut impl Write) -> Result<(), String> {
     let params: GetResourceParams = match request.params {
-        Some(p) =>
-            serde_json::from_value(p).map_err(|e| format!("Invalid get resource params: {}", e))?,
+        Some(p) => {
+            serde_json::from_value(p).map_err(|e| format!("Invalid get resource params: {}", e))?
+        }
         None => {
             return send_error(
                 stdout,
                 request.id.unwrap_or(json!(null)),
                 -32602,
-                "Missing params for resource/get"
-            ).await;
+                "Missing params for resource/get",
+            )
+            .await;
         }
     };
 
     match params.name.as_str() {
-        "current_directory" =>
-            get_current_directory(params.params, request.id.unwrap_or(json!(null)), stdout).await,
-        "home_directory" =>
-            get_home_directory(params.params, request.id.unwrap_or(json!(null)), stdout).await,
-        _ =>
+        "current_directory" => {
+            get_current_directory(params.params, request.id.unwrap_or(json!(null)), stdout).await
+        }
+        "home_directory" => {
+            get_home_directory(params.params, request.id.unwrap_or(json!(null)), stdout).await
+        }
+        _ => {
             send_error(
                 stdout,
                 request.id.unwrap_or(json!(null)),
                 -32601,
-                &format!("Resource not found: {}", params.name)
-            ).await,
+                &format!("Resource not found: {}", params.name),
+            )
+            .await
+        }
     }
 }
 
@@ -784,7 +792,7 @@ async fn handle_get_resource(request: Request, stdout: &mut impl Write) -> Resul
 async fn execute_list_directory(
     args: Value,
     id: Value,
-    stdout: &mut impl Write
+    stdout: &mut impl Write,
 ) -> Result<(), String> {
     let path_str = args["path"]
         .as_str()
@@ -794,13 +802,15 @@ async fn execute_list_directory(
 
     match list_directory_contents(path, recursive).await {
         Ok(entries) => send_response(stdout, id, Some(json!(entries)), None).await,
-        Err(e) =>
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to list directory '{}': {}", path_str, e)
-            ).await,
+                &format!("Failed to list directory '{}': {}", path_str, e),
+            )
+            .await
+        }
     }
 }
 
@@ -821,13 +831,15 @@ async fn execute_read_file(args: Value, id: Value, stdout: &mut impl Write) -> R
 
     match read_file_content_helper(path, start_line, end_line) {
         Ok(content) => send_response(stdout, id, Some(json!({ "content": content })), None).await,
-        Err(e) =>
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to read file '{}': {}", path_str, e)
-            ).await,
+                &format!("Failed to read file '{}': {}", path_str, e),
+            )
+            .await
+        }
     }
 }
 
@@ -857,8 +869,9 @@ async fn execute_write_file(args: Value, id: Value, stdout: &mut impl Write) -> 
                             "Failed to create parent directories for '{}': {}",
                             path.display(),
                             e
-                        )
-                    ).await;
+                        ),
+                    )
+                    .await;
                 }
             }
         }
@@ -866,18 +879,20 @@ async fn execute_write_file(args: Value, id: Value, stdout: &mut impl Write) -> 
 
     let write_result = match mode {
         "create" => {
-            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
                 Ok(mut file) => file.write_all(content.as_bytes()),
                 Err(e) => Err(e),
             }
         }
-        "append" => {
-            match fs::OpenOptions::new().create(true).append(true).open(&path) {
-                Ok(mut file) => file.write_all(content.as_bytes()),
-                Err(e) => Err(e),
-            }
-        }
-        "overwrite" => { fs::write(&path, content) }
+        "append" => match fs::OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(mut file) => file.write_all(content.as_bytes()),
+            Err(e) => Err(e),
+        },
+        "overwrite" => fs::write(&path, content),
         _ => {
             return send_error(stdout, id, -32602, &format!("Invalid write mode: {}", mode)).await;
         }
@@ -885,20 +900,22 @@ async fn execute_write_file(args: Value, id: Value, stdout: &mut impl Write) -> 
 
     match write_result {
         Ok(_) => send_response(stdout, id, Some(json!({ "success": true })), None).await,
-        Err(e) =>
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to write file '{}': {}", path.display(), e)
-            ).await,
+                &format!("Failed to write file '{}': {}", path.display(), e),
+            )
+            .await
+        }
     }
 }
 
 async fn execute_apply_patch(
     args: Value,
     id: Value,
-    stdout: &mut impl Write
+    stdout: &mut impl Write,
 ) -> Result<(), String> {
     let path_str = args["path"]
         .as_str()
@@ -913,22 +930,31 @@ async fn execute_apply_patch(
             stdout,
             id,
             -32001,
-            &format!("File not found for patching: {}", path_str)
-        ).await;
+            &format!("File not found for patching: {}", path_str),
+        )
+        .await;
     }
     if !path.is_file() {
-        return send_error(stdout, id, -32001, &format!("Path is not a file: {}", path_str)).await;
+        return send_error(
+            stdout,
+            id,
+            -32001,
+            &format!("Path is not a file: {}", path_str),
+        )
+        .await;
     }
 
     match apply_patch_to_file_helper(path, patch_content) {
         Ok(_) => send_response(stdout, id, Some(json!({ "success": true })), None).await,
-        Err(e) =>
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to apply patch to '{}': {}", path_str, e)
-            ).await,
+                &format!("Failed to apply patch to '{}': {}", path_str, e),
+            )
+            .await
+        }
     }
 }
 
@@ -942,24 +968,30 @@ async fn execute_delete(args: Value, id: Value, stdout: &mut impl Write) -> Resu
         return send_error(stdout, id, -32001, &format!("Path not found: {}", path_str)).await;
     }
 
-    let result = if path.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) };
+    let result = if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
 
     match result {
         Ok(_) => send_response(stdout, id, Some(json!({ "success": true })), None).await,
-        Err(e) =>
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to delete '{}': {}", path_str, e)
-            ).await,
+                &format!("Failed to delete '{}': {}", path_str, e),
+            )
+            .await
+        }
     }
 }
 
 async fn execute_create_directory(
     args: Value,
     id: Value,
-    stdout: &mut impl Write
+    stdout: &mut impl Write,
 ) -> Result<(), String> {
     let path_str = args["path"]
         .as_str()
@@ -967,17 +999,23 @@ async fn execute_create_directory(
     let create_parents = args["create_parents"].as_bool().unwrap_or(false);
     let path = Path::new(path_str);
 
-    let result = if create_parents { fs::create_dir_all(path) } else { fs::create_dir(path) };
+    let result = if create_parents {
+        fs::create_dir_all(path)
+    } else {
+        fs::create_dir(path)
+    };
 
     match result {
         Ok(_) => send_response(stdout, id, Some(json!({ "success": true })), None).await,
-        Err(e) =>
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to create directory '{}': {}", path_str, e)
-            ).await,
+                &format!("Failed to create directory '{}': {}", path_str, e),
+            )
+            .await
+        }
     }
 }
 
@@ -997,8 +1035,9 @@ async fn execute_rename(args: Value, id: Value, stdout: &mut impl Write) -> Resu
             stdout,
             id,
             -32001,
-            &format!("Source path not found: {}", from_path_str)
-        ).await;
+            &format!("Source path not found: {}", from_path_str),
+        )
+        .await;
     }
 
     if let Some(parent) = to_path.parent() {
@@ -1007,20 +1046,26 @@ async fn execute_rename(args: Value, id: Value, stdout: &mut impl Write) -> Resu
                 stdout,
                 id,
                 -32001,
-                &format!("Target directory not found: {}", parent.display())
-            ).await;
+                &format!("Target directory not found: {}", parent.display()),
+            )
+            .await;
         }
     }
 
     match fs::rename(from_path, to_path) {
         Ok(_) => send_response(stdout, id, Some(json!({ "success": true })), None).await,
-        Err(e) =>
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to rename from '{}' to '{}': {}", from_path_str, to_path_str, e)
-            ).await,
+                &format!(
+                    "Failed to rename from '{}' to '{}': {}",
+                    from_path_str, to_path_str, e
+                ),
+            )
+            .await
+        }
     }
 }
 
@@ -1032,13 +1077,15 @@ async fn execute_file_info(args: Value, id: Value, stdout: &mut impl Write) -> R
 
     match get_file_info(path).await {
         Ok(info) => send_response(stdout, id, Some(json!(info)), None).await,
-        Err(e) =>
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to get file info for '{}': {}", path_str, e)
-            ).await,
+                &format!("Failed to get file info for '{}': {}", path_str, e),
+            )
+            .await
+        }
     }
 }
 
@@ -1046,39 +1093,45 @@ async fn execute_file_info(args: Value, id: Value, stdout: &mut impl Write) -> R
 async fn get_current_directory(
     _params: Option<Value>,
     id: Value,
-    stdout: &mut impl Write
+    stdout: &mut impl Write,
 ) -> Result<(), String> {
     match std::env::current_dir() {
-        Ok(path) =>
+        Ok(path) => {
             send_response(
                 stdout,
                 id,
                 Some(json!({ "path": path.display().to_string() })),
-                None
-            ).await,
-        Err(e) =>
+                None,
+            )
+            .await
+        }
+        Err(e) => {
             send_error(
                 stdout,
                 id,
                 -32000,
-                &format!("Failed to get current directory: {}", e)
-            ).await,
+                &format!("Failed to get current directory: {}", e),
+            )
+            .await
+        }
     }
 }
 
 async fn get_home_directory(
     _params: Option<Value>,
     id: Value,
-    stdout: &mut impl Write
+    stdout: &mut impl Write,
 ) -> Result<(), String> {
     match dirs::home_dir() {
-        Some(path) =>
+        Some(path) => {
             send_response(
                 stdout,
                 id,
                 Some(json!({ "path": path.display().to_string() })),
-                None
-            ).await,
+                None,
+            )
+            .await
+        }
         None => send_error(stdout, id, -32000, "Failed to get home directory").await,
     }
 }
@@ -1111,24 +1164,23 @@ async fn get_file_info(path: &Path) -> Result<FileInfo, io::Error> {
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .and_then(|d|
+        .and_then(|d| {
             chrono::DateTime::<chrono::Utc>::from_timestamp(d.as_secs() as i64, d.subsec_nanos())
-        )
+        })
         .map(|dt| dt.to_rfc3339());
     let created_time = metadata
         .created()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .and_then(|d|
+        .and_then(|d| {
             chrono::DateTime::<chrono::Utc>::from_timestamp(d.as_secs() as i64, d.subsec_nanos())
-        )
+        })
         .map(|dt| dt.to_rfc3339());
 
     Ok(FileInfo {
-        name: path.file_name().map_or_else(
-            || "".to_string(),
-            |n| n.to_string_lossy().into_owned()
-        ),
+        name: path
+            .file_name()
+            .map_or_else(|| "".to_string(), |n| n.to_string_lossy().into_owned()),
         path: path.to_string_lossy().into_owned(),
         is_dir: metadata.is_dir(),
         size: if metadata.is_file() {
@@ -1146,7 +1198,7 @@ async fn get_file_info(path: &Path) -> Result<FileInfo, io::Error> {
 fn read_file_content_helper(
     path: &Path,
     start_line: Option<usize>,
-    end_line: Option<usize>
+    end_line: Option<usize>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let file = fs::File::open(path)?;
     let reader = io::BufReader::new(file);
@@ -1211,7 +1263,7 @@ fn read_file_content_helper(
 
 fn apply_patch_to_file_helper(
     path: &Path,
-    patch_content: &str
+    patch_content: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let original_content = fs::read_to_string(path)?;
     let patch = diffy::Patch::from_str(patch_content)?;
@@ -1224,7 +1276,7 @@ async fn send_response(
     stdout: &mut impl Write,
     id: Value,
     result: Option<Value>,
-    error: Option<JsonRpcError>
+    error: Option<JsonRpcError>,
 ) -> Result<(), String> {
     let response = Response {
         jsonrpc: "2.0".to_string(),
@@ -1244,9 +1296,12 @@ async fn send_response(
     // Write response with proper Content-Length framing
     let message = format!("Content-Length: {}\r\n\r\n{}", json_str.len(), json_str);
 
-    println!("Sending response (ID: {}, length: {} bytes)", 
-             response.id, json_str.len());
-    
+    println!(
+        "Sending response (ID: {}, length: {} bytes)",
+        response.id,
+        json_str.len()
+    );
+
     // Write in steps with detailed logging
     match stdout.write_all(message.as_bytes()) {
         Ok(_) => println!("Response data written successfully"),
@@ -1255,12 +1310,12 @@ async fn send_response(
             return Err(format!("Failed to write response: {}", e));
         }
     }
-    
+
     match stdout.flush() {
         Ok(_) => {
             println!("Response flushed successfully");
             Ok(())
-        },
+        }
         Err(e) => {
             eprintln!("ERROR: Failed to flush output: {}", e);
             Err(format!("Failed to flush output: {}", e))
@@ -1272,7 +1327,7 @@ async fn send_error(
     stdout: &mut impl Write,
     id: Value,
     code: i64,
-    message: &str
+    message: &str,
 ) -> Result<(), String> {
     send_response(
         stdout,
@@ -1282,6 +1337,7 @@ async fn send_error(
             code,
             message: message.to_string(),
             data: None,
-        })
-    ).await
+        }),
+    )
+    .await
 }

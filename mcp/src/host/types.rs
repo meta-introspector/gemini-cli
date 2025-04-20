@@ -1,20 +1,20 @@
 use crate::config::McpServerConfig;
 use crate::rpc::Notification;
 use gemini_core::rpc_types::{JsonRpcError, Request, Response, ServerCapabilities};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::{error::Elapsed, Duration};
-use std::process::Stdio;
-use tokio::process::Command;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::task;
 use log::{debug, error, info, warn};
 use serde_json;
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::ErrorKind;
+use std::pin::Pin;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::process::Command;
+use tokio::sync::{mpsc, Mutex};
+use tokio::task;
+use tokio::time::{error::Elapsed, Duration};
 
 // ActiveServer manages an active MCP server connection
 #[derive(Clone, Debug)]
@@ -102,9 +102,14 @@ impl ActiveServer {
             .ok_or_else(|| format!("Server '{}': Failed to get stderr", server_name))?;
 
         // Create channels for communication
-        let (_request_tx, mut _request_rx): (mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>, _) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-        let (_notification_tx, mut _notification_rx): (mpsc::Sender<Notification>, _) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-        let (_stdin_tx, mut _stdin_rx): (mpsc::Sender<String>, _) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (_request_tx, mut _request_rx): (
+            mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>,
+            _,
+        ) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (_notification_tx, mut _notification_rx): (mpsc::Sender<Notification>, _) =
+            mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (_stdin_tx, mut _stdin_rx): (mpsc::Sender<String>, _) =
+            mpsc::channel(CHANNEL_BUFFER_SIZE);
 
         // Create shared state
         let _capabilities = Arc::new(Mutex::new(None::<ServerCapabilities>));
@@ -138,7 +143,10 @@ impl ActiveServer {
                         line.clear();
                     }
                     Err(e) => {
-                        error!("Error reading MCP stderr for '{}': {}", server_name_stderr, e);
+                        error!(
+                            "Error reading MCP stderr for '{}': {}",
+                            server_name_stderr, e
+                        );
                         break;
                     }
                 }
@@ -149,7 +157,7 @@ impl ActiveServer {
         task::spawn(async move {
             let mut reader = BufReader::with_capacity(STDIO_BUFFER_SIZE, _actual_stdout);
             let mut buffer = Vec::with_capacity(JSON_RPC_PARSE_BUFFER_SIZE); // Use Vec for easier clearing and resizing
-            
+
             loop {
                 let mut content_length: Option<usize> = None;
                 buffer.clear(); // Clear buffer for headers
@@ -161,13 +169,17 @@ impl ActiveServer {
                     match reader.read_until(b'\n', &mut buffer).await {
                         Ok(0) => {
                             // EOF
-                            info!("Stdout({}): Stream closed (EOF received while reading headers).", server_name_stdout);
+                            info!(
+                                "Stdout({}): Stream closed (EOF received while reading headers).",
+                                server_name_stdout
+                            );
                             // Clean up pending requests on EOF
                             let mut requests = pending_requests_clone.lock().await;
                             for (_, pending) in requests.drain() {
                                 let _ = pending.responder.send(Err(JsonRpcError {
                                     code: -32001, // Custom code for unexpected close
-                                    message: "Connection closed unexpectedly while reading headers".to_string(),
+                                    message: "Connection closed unexpectedly while reading headers"
+                                        .to_string(),
                                     data: None,
                                 }));
                             }
@@ -177,31 +189,46 @@ impl ActiveServer {
                             let line_bytes = &buffer[start_len..];
                             let line = String::from_utf8_lossy(line_bytes);
                             let line_trimmed = line.trim_end(); // Trim \r\n or \n
-                            debug!("Stdout({}): Read header line ({} bytes): '{}'", server_name_stdout, bytes_read, line_trimmed);
+                            debug!(
+                                "Stdout({}): Read header line ({} bytes): '{}'",
+                                server_name_stdout, bytes_read, line_trimmed
+                            );
 
                             if line_trimmed.is_empty() {
                                 // End of headers
                                 debug!("Stdout({}): Empty header line received, proceeding to read content.", server_name_stdout);
                                 break;
                             }
-                            
+
                             // Parse Content-Length, case-insensitive
-                            if line_trimmed.to_ascii_lowercase().starts_with("content-length:") {
+                            if line_trimmed
+                                .to_ascii_lowercase()
+                                .starts_with("content-length:")
+                            {
                                 if let Some(len_str) = line_trimmed.split(':').nth(1) {
                                     if let Ok(len) = len_str.trim().parse::<usize>() {
-                                        debug!("Stdout({}): Parsed Content-Length: {}", server_name_stdout, len);
+                                        debug!(
+                                            "Stdout({}): Parsed Content-Length: {}",
+                                            server_name_stdout, len
+                                        );
                                         content_length = Some(len);
                                     } else {
                                         warn!("Stdout({}): Failed to parse Content-Length value: '{}'", server_name_stdout, len_str.trim());
                                     }
                                 } else {
-                                    warn!("Stdout({}): Malformed Content-Length line: '{}'", server_name_stdout, line_trimmed);
+                                    warn!(
+                                        "Stdout({}): Malformed Content-Length line: '{}'",
+                                        server_name_stdout, line_trimmed
+                                    );
                                 }
                             }
                             // Note: LSP spec allows other headers, we just ignore them
                         }
                         Err(e) => {
-                            error!("Stdout({}): Error reading headers: {}", server_name_stdout, e);
+                            error!(
+                                "Stdout({}): Error reading headers: {}",
+                                server_name_stdout, e
+                            );
                             // Clean up pending requests on error
                             let mut requests = pending_requests_clone.lock().await;
                             for (_, pending) in requests.drain() {
@@ -219,40 +246,66 @@ impl ActiveServer {
                 // Read the content based on content-length
                 if let Some(length) = content_length {
                     if length == 0 {
-                         warn!("Stdout({}): Received Content-Length: 0, skipping content read.", server_name_stdout);
-                         continue; // Nothing to read, wait for next message
+                        warn!(
+                            "Stdout({}): Received Content-Length: 0, skipping content read.",
+                            server_name_stdout
+                        );
+                        continue; // Nothing to read, wait for next message
                     }
-                    
+
                     let mut content = vec![0; length];
-                    debug!("Stdout({}): Attempting to read {} bytes of content...", server_name_stdout, length);
+                    debug!(
+                        "Stdout({}): Attempting to read {} bytes of content...",
+                        server_name_stdout, length
+                    );
                     match reader.read_exact(&mut content).await {
                         Ok(_) => {
                             let json_str_result = String::from_utf8(content);
                             match json_str_result {
                                 Ok(json_str) => {
-                                    debug!("Stdout({}): Received content ({} bytes): {}", server_name_stdout, length, json_str);
-                                    
+                                    debug!(
+                                        "Stdout({}): Received content ({} bytes): {}",
+                                        server_name_stdout, length, json_str
+                                    );
+
                                     // Process the message
                                     match serde_json::from_str::<serde_json::Value>(&json_str) {
                                         Ok(json_value) => {
                                             // Check if it's a Response or Request/Notification (though servers shouldn't send requests)
-                                            if json_value.get("id").is_some() && (json_value.get("result").is_some() || json_value.get("error").is_some()) {
-                                                match serde_json::from_value::<Response>(json_value) {
+                                            if json_value.get("id").is_some()
+                                                && (json_value.get("result").is_some()
+                                                    || json_value.get("error").is_some())
+                                            {
+                                                match serde_json::from_value::<Response>(json_value)
+                                                {
                                                     Ok(response) => {
                                                         // Handle response
                                                         let request_id = match &response.id {
-                                                            serde_json::Value::Number(n) => n.as_u64(),
+                                                            serde_json::Value::Number(n) => {
+                                                                n.as_u64()
+                                                            }
                                                             _ => None, // Ignore responses with non-numeric IDs for now
                                                         };
-                                                        
+
                                                         if let Some(id) = request_id {
                                                             // Remove from pending requests and send response to requester
-                                                            if let Some(pending) = pending_requests_clone.lock().await.remove(&id) {
+                                                            if let Some(pending) =
+                                                                pending_requests_clone
+                                                                    .lock()
+                                                                    .await
+                                                                    .remove(&id)
+                                                            {
                                                                 debug!("Stdout({}): Matched response ID {} to pending request '{}'", server_name_stdout, id, pending.method);
                                                                 if pending.method == "initialize" {
                                                                     // If initialize, update capabilities
-                                                                    if let Ok(result) = &response.result() {
-                                                                         match serde_json::from_value::<ServerInitializeResult>(result.clone()) {
+                                                                    if let Ok(result) =
+                                                                        &response.result()
+                                                                    {
+                                                                        match serde_json::from_value::<
+                                                                            ServerInitializeResult,
+                                                                        >(
+                                                                            result.clone()
+                                                                        ) {
                                                                             Ok(init_result) => {
                                                                                 debug!("Stdout({}): Received capabilities: {:?}", server_name_stdout, init_result.capabilities);
                                                                                 *capabilities_clone.lock().await = Some(init_result.capabilities);
@@ -261,21 +314,26 @@ impl ActiveServer {
                                                                                 error!("Stdout({}): Failed to deserialize InitializeResult from {:?}: {}", server_name_stdout, result, e);
                                                                             }
                                                                         }
-                                                                    } else if let Some(err) = &response.error {
+                                                                    } else if let Some(err) =
+                                                                        &response.error
+                                                                    {
                                                                         error!("Stdout({}): Initialize request failed with error: {:?}", server_name_stdout, err);
                                                                     }
                                                                 }
-                                                                
+
                                                                 // Send response back
                                                                 debug!("Stdout({}): Sending response for ID {} back to requester.", server_name_stdout, id);
-                                                                if let Err(_) = pending.responder.send(Ok(response)) {
+                                                                if let Err(_) = pending
+                                                                    .responder
+                                                                    .send(Ok(response))
+                                                                {
                                                                     warn!("Stdout({}): Failed to send response for ID {} back to requester (receiver dropped).", server_name_stdout, id);
                                                                 }
                                                             } else {
                                                                 warn!("Stdout({}): Received response for unknown or timed-out request ID: {}", server_name_stdout, id);
                                                             }
                                                         } else {
-                                                             warn!("Stdout({}): Received response with non-numeric or null ID: {:?}", server_name_stdout, response.id);
+                                                            warn!("Stdout({}): Received response with non-numeric or null ID: {:?}", server_name_stdout, response.id);
                                                         }
                                                     }
                                                     Err(e) => {
@@ -297,16 +355,22 @@ impl ActiveServer {
                                 }
                                 Err(e) => {
                                     // Use from_utf8_lossy for logging if original conversion failed
-                                    let lossy_content = String::from_utf8_lossy(e.as_bytes()); 
+                                    let lossy_content = String::from_utf8_lossy(e.as_bytes());
                                     error!("Stdout({}): Invalid UTF-8 received ({} bytes): {}. Lossy representation: '{}'", server_name_stdout, length, e, lossy_content);
                                 }
                             }
                         }
                         Err(e) => {
-                            error!("Stdout({}): Error reading content (expected {} bytes): {}", server_name_stdout, length, e);
+                            error!(
+                                "Stdout({}): Error reading content (expected {} bytes): {}",
+                                server_name_stdout, length, e
+                            );
                             if e.kind() == ErrorKind::UnexpectedEof {
                                 // EOF during content read - server probably crashed or closed stream prematurely
-                                info!("Stdout({}): EOF encountered while reading message content.", server_name_stdout);
+                                info!(
+                                    "Stdout({}): EOF encountered while reading message content.",
+                                    server_name_stdout
+                                );
                                 // Clean up pending requests
                                 let mut requests = pending_requests_clone.lock().await;
                                 for (_, pending) in requests.drain() {
@@ -331,8 +395,12 @@ impl ActiveServer {
             info!("Stdout({}): Reader task exiting.", server_name_stdout);
             // Final cleanup in case the loop exited cleanly but requests were still pending (shouldn't happen with proper shutdown)
             let mut requests = pending_requests_clone.lock().await;
-             if !requests.is_empty() {
-                warn!("Stdout({}): Reader task exiting with {} pending requests.", server_name_stdout, requests.len());
+            if !requests.is_empty() {
+                warn!(
+                    "Stdout({}): Reader task exiting with {} pending requests.",
+                    server_name_stdout,
+                    requests.len()
+                );
                 for (_, pending) in requests.drain() {
                     let _ = pending.responder.send(Err(JsonRpcError {
                         code: -32004, // Custom code for exit with pending requests
@@ -397,7 +465,10 @@ impl ActiveServer {
             }
             // Try a final flush on exit? Might error if pipe is broken.
             if let Err(e) = writer.flush().await {
-                 warn!("Stdin({}): Error during final flush on exit: {}", server_name_stdin, e);
+                warn!(
+                    "Stdin({}): Error during final flush on exit: {}",
+                    server_name_stdin, e
+                );
             }
             info!("Stdin({}): Writer task finished.", server_name_stdin);
         });
@@ -427,16 +498,24 @@ impl ActiveServer {
                     Ok(request_json) => {
                         // Store in pending requests if we have an ID
                         if let Some(id) = request_id {
-                            pending_requests_for_request.lock().await.insert(id, PendingRequest {
-                                responder,
-                                method: request.method.clone(),
-                            });
-                            
-                            debug!("ReqHandler({}): Sending request ID {} ('{}') to stdin writer.", server_name_req, id, request.method);
+                            pending_requests_for_request.lock().await.insert(
+                                id,
+                                PendingRequest {
+                                    responder,
+                                    method: request.method.clone(),
+                                },
+                            );
+
+                            debug!(
+                                "ReqHandler({}): Sending request ID {} ('{}') to stdin writer.",
+                                server_name_req, id, request.method
+                            );
                             if let Err(e) = _stdin_tx_req.send(request_json).await {
                                 error!("ReqHandler({}): Failed to send request ID {} to stdin writer: {}", server_name_req, id, e);
                                 // Remove from pending and send error
-                                if let Some(pending) = pending_requests_for_request.lock().await.remove(&id) {
+                                if let Some(pending) =
+                                    pending_requests_for_request.lock().await.remove(&id)
+                                {
                                     let _ = pending.responder.send(Err(JsonRpcError {
                                         code: -32000,
                                         message: format!("Failed to send request: {}", e),
@@ -449,7 +528,10 @@ impl ActiveServer {
                             warn!("ReqHandler({}): Request has no ID (method: '{}'). Treating as notification.", server_name_req, request.method);
                             debug!("ReqHandler({}): Sending notification-style request ('{}') to stdin writer.", server_name_req, request.method);
                             if let Err(e) = _stdin_tx_req.send(request_json).await {
-                                error!("ReqHandler({}): Failed to send notification-style request: {}", server_name_req, e);
+                                error!(
+                                    "ReqHandler({}): Failed to send notification-style request: {}",
+                                    server_name_req, e
+                                );
                                 let _ = responder.send(Err(JsonRpcError {
                                     code: -32000,
                                     message: format!("Failed to send request: {}", e),
@@ -476,24 +558,36 @@ impl ActiveServer {
         task::spawn(async move {
             while let Some(notification) = _notification_rx.recv().await {
                 if shutdown_for_notification.load(Ordering::SeqCst) {
-                     debug!("NotifHandler({}): Shutdown in progress, dropping notification: {:?}", server_name_notif, notification.method);
+                    debug!(
+                        "NotifHandler({}): Shutdown in progress, dropping notification: {:?}",
+                        server_name_notif, notification.method
+                    );
                     continue;
                 }
 
                 match serde_json::to_string(&notification) {
                     Ok(notification_json) => {
-                         debug!("NotifHandler({}): Sending notification ('{}') to stdin writer.", server_name_notif, notification.method);
+                        debug!(
+                            "NotifHandler({}): Sending notification ('{}') to stdin writer.",
+                            server_name_notif, notification.method
+                        );
                         if let Err(e) = _stdin_tx_notif.send(notification_json).await {
                             error!("NotifHandler({}): Failed to send notification ('{}') to stdin writer: {}", server_name_notif, notification.method, e);
                             // Maybe break here if the channel is broken?
                         }
                     }
                     Err(e) => {
-                        error!("NotifHandler({}): Failed to serialize notification ('{}'): {}", server_name_notif, notification.method, e);
+                        error!(
+                            "NotifHandler({}): Failed to serialize notification ('{}'): {}",
+                            server_name_notif, notification.method, e
+                        );
                     }
                 }
             }
-             info!("NotifHandler({}): Notification handler task exiting.", server_name_notif);
+            info!(
+                "NotifHandler({}): Notification handler task exiting.",
+                server_name_notif
+            );
         });
 
         // Create the server instance
@@ -512,15 +606,20 @@ impl ActiveServer {
         let (init_tx, init_rx) = oneshot::channel::<Result<Response, JsonRpcError>>();
 
         // Store in pending requests
-        _pending_requests.lock().await.insert(init_request_id, PendingRequest {
-            responder: init_tx,
-            method: "initialize".to_string(),
-        });
+        _pending_requests.lock().await.insert(
+            init_request_id,
+            PendingRequest {
+                responder: init_tx,
+                method: "initialize".to_string(),
+            },
+        );
 
         // Create initialize request
         let init_request = Request {
             jsonrpc: "2.0".to_string(),
-            id: Some(serde_json::Value::Number(serde_json::Number::from(init_request_id))),
+            id: Some(serde_json::Value::Number(serde_json::Number::from(
+                init_request_id,
+            ))),
             method: "initialize".to_string(),
             params: Some(serde_json::json!({
                 "clientInfo": {
@@ -533,10 +632,16 @@ impl ActiveServer {
         // Send request
         let init_request_json = serde_json::to_string(&init_request)
             .map_err(|e| format!("Failed to serialize initialize request: {}", e))?;
-        
-        debug!("Launch({}): Sending initialize request (ID {}) to stdin writer channel.", server_name_for_init, init_request_id);
+
+        debug!(
+            "Launch({}): Sending initialize request (ID {}) to stdin writer channel.",
+            server_name_for_init, init_request_id
+        );
         if let Err(e) = _stdin_tx.send(init_request_json).await {
-            error!("Launch({}): Failed to send initialize request (ID {}) to stdin writer channel: {}", server_name_for_init, init_request_id, e);
+            error!(
+                "Launch({}): Failed to send initialize request (ID {}) to stdin writer channel: {}",
+                server_name_for_init, init_request_id, e
+            );
             // Clean up pending request if sending failed immediately
             if let Some(pending) = _pending_requests.lock().await.remove(&init_request_id) {
                 let _ = pending.responder.send(Err(JsonRpcError {
@@ -547,28 +652,49 @@ impl ActiveServer {
             }
             return Err(format!("Failed to send initialize request: {}", e));
         }
-        info!("Launch({}): Initialize request (ID {}) queued for sending.", server_name_for_init, init_request_id);
+        info!(
+            "Launch({}): Initialize request (ID {}) queued for sending.",
+            server_name_for_init, init_request_id
+        );
 
         // Set up timeout for initialization
-        let init_timeout = Duration::from_secs(std::env::var("GEMINI_MCP_TIMEOUT").unwrap_or("10".to_string()).parse::<u64>().unwrap_or(120)); // Extend timeout to 120 seconds for slower servers
-        info!("Setting up initialization timeout of {}s for server '{}'", init_timeout.as_secs(), server_name);
-        
+        let init_timeout = Duration::from_secs(
+            std::env::var("GEMINI_MCP_TIMEOUT")
+                .unwrap_or("10".to_string())
+                .parse::<u64>()
+                .unwrap_or(120),
+        ); // Extend timeout to 120 seconds for slower servers
+        info!(
+            "Setting up initialization timeout of {}s for server '{}'",
+            init_timeout.as_secs(),
+            server_name
+        );
+
         let server_name_clone = server_name.clone();
         let init_future = Box::pin(tokio::time::timeout(init_timeout, async move {
-            debug!("Waiting for initialization response from server '{}'", server_name_clone);
+            debug!(
+                "Waiting for initialization response from server '{}'",
+                server_name_clone
+            );
             match init_rx.await {
                 Ok(res) => {
-                    debug!("Received initialization response from '{}': {:?}", server_name_clone, res);
+                    debug!(
+                        "Received initialization response from '{}': {:?}",
+                        server_name_clone, res
+                    );
                     res.map(|_| ()) // Convert Response -> ()
-                },
+                }
                 Err(e) => {
-                    error!("Failed to receive initialization response from '{}': {}", server_name_clone, e);
+                    error!(
+                        "Failed to receive initialization response from '{}': {}",
+                        server_name_clone, e
+                    );
                     Err(JsonRpcError {
                         code: -32603,
                         message: format!("Failed to receive init response: {}", e),
                         data: None,
                     })
-                },
+                }
             }
         })) as InitFuture;
 
@@ -588,13 +714,19 @@ impl ActiveServer {
         // Since we need to run the server via stdio instead, we'll convert the config
         // to use local execution but remember it was originally SSE
         if config.command.is_empty() {
-            return Err(format!("Server '{}': Empty command, cannot launch local SSE server", server_name));
+            return Err(format!(
+                "Server '{}': Empty command, cannot launch local SSE server",
+                server_name
+            ));
         }
 
-        info!("Note: Using stdio transport for SSE server '{}' as a fallback", server_name);
+        info!(
+            "Note: Using stdio transport for SSE server '{}' as a fallback",
+            server_name
+        );
 
         // Now we follow the same implementation as the stdio version
-        
+
         // Set up command with executable and arguments
         let mut command_parts = config.command.iter();
         let executable = command_parts.next().unwrap(); // Safe due to is_empty check
@@ -628,9 +760,14 @@ impl ActiveServer {
             .ok_or_else(|| format!("Server '{}': Failed to get stderr", server_name))?;
 
         // Create channels for communication
-        let (_request_tx, mut _request_rx): (mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>, _) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-        let (_notification_tx, mut _notification_rx): (mpsc::Sender<Notification>, _) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-        let (_stdin_tx, mut _stdin_rx): (mpsc::Sender<String>, _) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (_request_tx, mut _request_rx): (
+            mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>,
+            _,
+        ) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (_notification_tx, mut _notification_rx): (mpsc::Sender<Notification>, _) =
+            mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (_stdin_tx, mut _stdin_rx): (mpsc::Sender<String>, _) =
+            mpsc::channel(CHANNEL_BUFFER_SIZE);
 
         // Create shared state
         let _capabilities = Arc::new(Mutex::new(None::<ServerCapabilities>));
@@ -664,7 +801,10 @@ impl ActiveServer {
                         line.clear();
                     }
                     Err(e) => {
-                        error!("Error reading MCP stderr for '{}': {}", server_name_stderr, e);
+                        error!(
+                            "Error reading MCP stderr for '{}': {}",
+                            server_name_stderr, e
+                        );
                         break;
                     }
                 }
@@ -675,7 +815,7 @@ impl ActiveServer {
         task::spawn(async move {
             let mut reader = BufReader::with_capacity(STDIO_BUFFER_SIZE, _actual_stdout);
             let mut buffer = Vec::with_capacity(JSON_RPC_PARSE_BUFFER_SIZE); // Use Vec for easier clearing and resizing
-            
+
             loop {
                 let mut content_length: Option<usize> = None;
                 buffer.clear(); // Clear buffer for headers
@@ -687,13 +827,17 @@ impl ActiveServer {
                     match reader.read_until(b'\n', &mut buffer).await {
                         Ok(0) => {
                             // EOF
-                            info!("Stdout({}): Stream closed (EOF received while reading headers).", server_name_stdout);
+                            info!(
+                                "Stdout({}): Stream closed (EOF received while reading headers).",
+                                server_name_stdout
+                            );
                             // Clean up pending requests on EOF
                             let mut requests = pending_requests_clone.lock().await;
                             for (_, pending) in requests.drain() {
                                 let _ = pending.responder.send(Err(JsonRpcError {
                                     code: -32001, // Custom code for unexpected close
-                                    message: "Connection closed unexpectedly while reading headers".to_string(),
+                                    message: "Connection closed unexpectedly while reading headers"
+                                        .to_string(),
                                     data: None,
                                 }));
                             }
@@ -703,31 +847,46 @@ impl ActiveServer {
                             let line_bytes = &buffer[start_len..];
                             let line = String::from_utf8_lossy(line_bytes);
                             let line_trimmed = line.trim_end(); // Trim \r\n or \n
-                            debug!("Stdout({}): Read header line ({} bytes): '{}'", server_name_stdout, bytes_read, line_trimmed);
+                            debug!(
+                                "Stdout({}): Read header line ({} bytes): '{}'",
+                                server_name_stdout, bytes_read, line_trimmed
+                            );
 
                             if line_trimmed.is_empty() {
                                 // End of headers
                                 debug!("Stdout({}): Empty header line received, proceeding to read content.", server_name_stdout);
                                 break;
                             }
-                            
+
                             // Parse Content-Length, case-insensitive
-                            if line_trimmed.to_ascii_lowercase().starts_with("content-length:") {
+                            if line_trimmed
+                                .to_ascii_lowercase()
+                                .starts_with("content-length:")
+                            {
                                 if let Some(len_str) = line_trimmed.split(':').nth(1) {
                                     if let Ok(len) = len_str.trim().parse::<usize>() {
-                                        debug!("Stdout({}): Parsed Content-Length: {}", server_name_stdout, len);
+                                        debug!(
+                                            "Stdout({}): Parsed Content-Length: {}",
+                                            server_name_stdout, len
+                                        );
                                         content_length = Some(len);
                                     } else {
                                         warn!("Stdout({}): Failed to parse Content-Length value: '{}'", server_name_stdout, len_str.trim());
                                     }
                                 } else {
-                                    warn!("Stdout({}): Malformed Content-Length line: '{}'", server_name_stdout, line_trimmed);
+                                    warn!(
+                                        "Stdout({}): Malformed Content-Length line: '{}'",
+                                        server_name_stdout, line_trimmed
+                                    );
                                 }
                             }
                             // Note: LSP spec allows other headers, we just ignore them
                         }
                         Err(e) => {
-                            error!("Stdout({}): Error reading headers: {}", server_name_stdout, e);
+                            error!(
+                                "Stdout({}): Error reading headers: {}",
+                                server_name_stdout, e
+                            );
                             // Clean up pending requests on error
                             let mut requests = pending_requests_clone.lock().await;
                             for (_, pending) in requests.drain() {
@@ -745,40 +904,66 @@ impl ActiveServer {
                 // Read the content based on content-length
                 if let Some(length) = content_length {
                     if length == 0 {
-                         warn!("Stdout({}): Received Content-Length: 0, skipping content read.", server_name_stdout);
-                         continue; // Nothing to read, wait for next message
+                        warn!(
+                            "Stdout({}): Received Content-Length: 0, skipping content read.",
+                            server_name_stdout
+                        );
+                        continue; // Nothing to read, wait for next message
                     }
-                    
+
                     let mut content = vec![0; length];
-                    debug!("Stdout({}): Attempting to read {} bytes of content...", server_name_stdout, length);
+                    debug!(
+                        "Stdout({}): Attempting to read {} bytes of content...",
+                        server_name_stdout, length
+                    );
                     match reader.read_exact(&mut content).await {
                         Ok(_) => {
                             let json_str_result = String::from_utf8(content);
                             match json_str_result {
                                 Ok(json_str) => {
-                                    debug!("Stdout({}): Received content ({} bytes): {}", server_name_stdout, length, json_str);
-                                    
+                                    debug!(
+                                        "Stdout({}): Received content ({} bytes): {}",
+                                        server_name_stdout, length, json_str
+                                    );
+
                                     // Process the message
                                     match serde_json::from_str::<serde_json::Value>(&json_str) {
                                         Ok(json_value) => {
                                             // Check if it's a Response or Request/Notification (though servers shouldn't send requests)
-                                            if json_value.get("id").is_some() && (json_value.get("result").is_some() || json_value.get("error").is_some()) {
-                                                match serde_json::from_value::<Response>(json_value) {
+                                            if json_value.get("id").is_some()
+                                                && (json_value.get("result").is_some()
+                                                    || json_value.get("error").is_some())
+                                            {
+                                                match serde_json::from_value::<Response>(json_value)
+                                                {
                                                     Ok(response) => {
                                                         // Handle response
                                                         let request_id = match &response.id {
-                                                            serde_json::Value::Number(n) => n.as_u64(),
+                                                            serde_json::Value::Number(n) => {
+                                                                n.as_u64()
+                                                            }
                                                             _ => None, // Ignore responses with non-numeric IDs for now
                                                         };
-                                                        
+
                                                         if let Some(id) = request_id {
                                                             // Remove from pending requests and send response to requester
-                                                            if let Some(pending) = pending_requests_clone.lock().await.remove(&id) {
+                                                            if let Some(pending) =
+                                                                pending_requests_clone
+                                                                    .lock()
+                                                                    .await
+                                                                    .remove(&id)
+                                                            {
                                                                 debug!("Stdout({}): Matched response ID {} to pending request '{}'", server_name_stdout, id, pending.method);
                                                                 if pending.method == "initialize" {
                                                                     // If initialize, update capabilities
-                                                                    if let Ok(result) = &response.result() {
-                                                                         match serde_json::from_value::<ServerInitializeResult>(result.clone()) {
+                                                                    if let Ok(result) =
+                                                                        &response.result()
+                                                                    {
+                                                                        match serde_json::from_value::<
+                                                                            ServerInitializeResult,
+                                                                        >(
+                                                                            result.clone()
+                                                                        ) {
                                                                             Ok(init_result) => {
                                                                                 debug!("Stdout({}): Received capabilities: {:?}", server_name_stdout, init_result.capabilities);
                                                                                 *capabilities_clone.lock().await = Some(init_result.capabilities);
@@ -787,21 +972,26 @@ impl ActiveServer {
                                                                                 error!("Stdout({}): Failed to deserialize InitializeResult from {:?}: {}", server_name_stdout, result, e);
                                                                             }
                                                                         }
-                                                                    } else if let Some(err) = &response.error {
+                                                                    } else if let Some(err) =
+                                                                        &response.error
+                                                                    {
                                                                         error!("Stdout({}): Initialize request failed with error: {:?}", server_name_stdout, err);
                                                                     }
                                                                 }
-                                                                
+
                                                                 // Send response back
                                                                 debug!("Stdout({}): Sending response for ID {} back to requester.", server_name_stdout, id);
-                                                                if let Err(_) = pending.responder.send(Ok(response)) {
+                                                                if let Err(_) = pending
+                                                                    .responder
+                                                                    .send(Ok(response))
+                                                                {
                                                                     warn!("Stdout({}): Failed to send response for ID {} back to requester (receiver dropped).", server_name_stdout, id);
                                                                 }
                                                             } else {
                                                                 warn!("Stdout({}): Received response for unknown or timed-out request ID: {}", server_name_stdout, id);
                                                             }
                                                         } else {
-                                                             warn!("Stdout({}): Received response with non-numeric or null ID: {:?}", server_name_stdout, response.id);
+                                                            warn!("Stdout({}): Received response with non-numeric or null ID: {:?}", server_name_stdout, response.id);
                                                         }
                                                     }
                                                     Err(e) => {
@@ -823,16 +1013,22 @@ impl ActiveServer {
                                 }
                                 Err(e) => {
                                     // Use from_utf8_lossy for logging if original conversion failed
-                                    let lossy_content = String::from_utf8_lossy(e.as_bytes()); 
+                                    let lossy_content = String::from_utf8_lossy(e.as_bytes());
                                     error!("Stdout({}): Invalid UTF-8 received ({} bytes): {}. Lossy representation: '{}'", server_name_stdout, length, e, lossy_content);
                                 }
                             }
                         }
                         Err(e) => {
-                            error!("Stdout({}): Error reading content (expected {} bytes): {}", server_name_stdout, length, e);
+                            error!(
+                                "Stdout({}): Error reading content (expected {} bytes): {}",
+                                server_name_stdout, length, e
+                            );
                             if e.kind() == ErrorKind::UnexpectedEof {
                                 // EOF during content read - server probably crashed or closed stream prematurely
-                                info!("Stdout({}): EOF encountered while reading message content.", server_name_stdout);
+                                info!(
+                                    "Stdout({}): EOF encountered while reading message content.",
+                                    server_name_stdout
+                                );
                                 // Clean up pending requests
                                 let mut requests = pending_requests_clone.lock().await;
                                 for (_, pending) in requests.drain() {
@@ -857,8 +1053,12 @@ impl ActiveServer {
             info!("Stdout({}): Reader task exiting.", server_name_stdout);
             // Final cleanup in case the loop exited cleanly but requests were still pending (shouldn't happen with proper shutdown)
             let mut requests = pending_requests_clone.lock().await;
-             if !requests.is_empty() {
-                warn!("Stdout({}): Reader task exiting with {} pending requests.", server_name_stdout, requests.len());
+            if !requests.is_empty() {
+                warn!(
+                    "Stdout({}): Reader task exiting with {} pending requests.",
+                    server_name_stdout,
+                    requests.len()
+                );
                 for (_, pending) in requests.drain() {
                     let _ = pending.responder.send(Err(JsonRpcError {
                         code: -32004, // Custom code for exit with pending requests
@@ -923,7 +1123,10 @@ impl ActiveServer {
             }
             // Try a final flush on exit? Might error if pipe is broken.
             if let Err(e) = writer.flush().await {
-                 warn!("Stdin({}): Error during final flush on exit: {}", server_name_stdin, e);
+                warn!(
+                    "Stdin({}): Error during final flush on exit: {}",
+                    server_name_stdin, e
+                );
             }
             info!("Stdin({}): Writer task finished.", server_name_stdin);
         });
@@ -953,16 +1156,24 @@ impl ActiveServer {
                     Ok(request_json) => {
                         // Store in pending requests if we have an ID
                         if let Some(id) = request_id {
-                            pending_requests_for_request.lock().await.insert(id, PendingRequest {
-                                responder,
-                                method: request.method.clone(),
-                            });
-                            
-                            debug!("ReqHandler({}): Sending request ID {} ('{}') to stdin writer.", server_name_req, id, request.method);
+                            pending_requests_for_request.lock().await.insert(
+                                id,
+                                PendingRequest {
+                                    responder,
+                                    method: request.method.clone(),
+                                },
+                            );
+
+                            debug!(
+                                "ReqHandler({}): Sending request ID {} ('{}') to stdin writer.",
+                                server_name_req, id, request.method
+                            );
                             if let Err(e) = _stdin_tx_req.send(request_json).await {
                                 error!("ReqHandler({}): Failed to send request ID {} to stdin writer: {}", server_name_req, id, e);
                                 // Remove from pending and send error
-                                if let Some(pending) = pending_requests_for_request.lock().await.remove(&id) {
+                                if let Some(pending) =
+                                    pending_requests_for_request.lock().await.remove(&id)
+                                {
                                     let _ = pending.responder.send(Err(JsonRpcError {
                                         code: -32000,
                                         message: format!("Failed to send request: {}", e),
@@ -975,7 +1186,10 @@ impl ActiveServer {
                             warn!("ReqHandler({}): Request has no ID (method: '{}'). Treating as notification.", server_name_req, request.method);
                             debug!("ReqHandler({}): Sending notification-style request ('{}') to stdin writer.", server_name_req, request.method);
                             if let Err(e) = _stdin_tx_req.send(request_json).await {
-                                error!("ReqHandler({}): Failed to send notification-style request: {}", server_name_req, e);
+                                error!(
+                                    "ReqHandler({}): Failed to send notification-style request: {}",
+                                    server_name_req, e
+                                );
                                 let _ = responder.send(Err(JsonRpcError {
                                     code: -32000,
                                     message: format!("Failed to send request: {}", e),
@@ -1002,24 +1216,36 @@ impl ActiveServer {
         task::spawn(async move {
             while let Some(notification) = _notification_rx.recv().await {
                 if shutdown_for_notification.load(Ordering::SeqCst) {
-                     debug!("NotifHandler({}): Shutdown in progress, dropping notification: {:?}", server_name_notif, notification.method);
+                    debug!(
+                        "NotifHandler({}): Shutdown in progress, dropping notification: {:?}",
+                        server_name_notif, notification.method
+                    );
                     continue;
                 }
 
                 match serde_json::to_string(&notification) {
                     Ok(notification_json) => {
-                         debug!("NotifHandler({}): Sending notification ('{}') to stdin writer.", server_name_notif, notification.method);
+                        debug!(
+                            "NotifHandler({}): Sending notification ('{}') to stdin writer.",
+                            server_name_notif, notification.method
+                        );
                         if let Err(e) = _stdin_tx_notif.send(notification_json).await {
                             error!("NotifHandler({}): Failed to send notification ('{}') to stdin writer: {}", server_name_notif, notification.method, e);
                             // Maybe break here if the channel is broken?
                         }
                     }
                     Err(e) => {
-                        error!("NotifHandler({}): Failed to serialize notification ('{}'): {}", server_name_notif, notification.method, e);
+                        error!(
+                            "NotifHandler({}): Failed to serialize notification ('{}'): {}",
+                            server_name_notif, notification.method, e
+                        );
                     }
                 }
             }
-             info!("NotifHandler({}): Notification handler task exiting.", server_name_notif);
+            info!(
+                "NotifHandler({}): Notification handler task exiting.",
+                server_name_notif
+            );
         });
 
         // Create the server instance
@@ -1038,15 +1264,20 @@ impl ActiveServer {
         let (init_tx, init_rx) = oneshot::channel::<Result<Response, JsonRpcError>>();
 
         // Store in pending requests
-        _pending_requests.lock().await.insert(init_request_id, PendingRequest {
-            responder: init_tx,
-            method: "initialize".to_string(),
-        });
+        _pending_requests.lock().await.insert(
+            init_request_id,
+            PendingRequest {
+                responder: init_tx,
+                method: "initialize".to_string(),
+            },
+        );
 
         // Create initialize request
         let init_request = Request {
             jsonrpc: "2.0".to_string(),
-            id: Some(serde_json::Value::Number(serde_json::Number::from(init_request_id))),
+            id: Some(serde_json::Value::Number(serde_json::Number::from(
+                init_request_id,
+            ))),
             method: "initialize".to_string(),
             params: Some(serde_json::json!({
                 "clientInfo": {
@@ -1059,10 +1290,16 @@ impl ActiveServer {
         // Send request
         let init_request_json = serde_json::to_string(&init_request)
             .map_err(|e| format!("Failed to serialize initialize request: {}", e))?;
-        
-        debug!("Launch({}): Sending initialize request (ID {}) to stdin writer channel.", server_name_for_init, init_request_id);
+
+        debug!(
+            "Launch({}): Sending initialize request (ID {}) to stdin writer channel.",
+            server_name_for_init, init_request_id
+        );
         if let Err(e) = _stdin_tx.send(init_request_json).await {
-            error!("Launch({}): Failed to send initialize request (ID {}) to stdin writer channel: {}", server_name_for_init, init_request_id, e);
+            error!(
+                "Launch({}): Failed to send initialize request (ID {}) to stdin writer channel: {}",
+                server_name_for_init, init_request_id, e
+            );
             // Clean up pending request if sending failed immediately
             if let Some(pending) = _pending_requests.lock().await.remove(&init_request_id) {
                 let _ = pending.responder.send(Err(JsonRpcError {
@@ -1073,28 +1310,44 @@ impl ActiveServer {
             }
             return Err(format!("Failed to send initialize request: {}", e));
         }
-        info!("Launch({}): Initialize request (ID {}) queued for sending.", server_name_for_init, init_request_id);
+        info!(
+            "Launch({}): Initialize request (ID {}) queued for sending.",
+            server_name_for_init, init_request_id
+        );
 
         // Set up timeout for initialization
         let init_timeout = Duration::from_secs(120); // Extend timeout to 120 seconds for slower servers
-        info!("Setting up initialization timeout of {}s for server '{}'", init_timeout.as_secs(), server_name);
-        
+        info!(
+            "Setting up initialization timeout of {}s for server '{}'",
+            init_timeout.as_secs(),
+            server_name
+        );
+
         let server_name_clone = server_name.clone();
         let init_future = Box::pin(tokio::time::timeout(init_timeout, async move {
-            debug!("Waiting for initialization response from server '{}'", server_name_clone);
+            debug!(
+                "Waiting for initialization response from server '{}'",
+                server_name_clone
+            );
             match init_rx.await {
                 Ok(res) => {
-                    debug!("Received initialization response from '{}': {:?}", server_name_clone, res);
+                    debug!(
+                        "Received initialization response from '{}': {:?}",
+                        server_name_clone, res
+                    );
                     res.map(|_| ()) // Convert Response -> ()
-                },
+                }
                 Err(e) => {
-                    error!("Failed to receive initialization response from '{}': {}", server_name_clone, e);
+                    error!(
+                        "Failed to receive initialization response from '{}': {}",
+                        server_name_clone, e
+                    );
                     Err(JsonRpcError {
                         code: -32603,
                         message: format!("Failed to receive init response: {}", e),
                         data: None,
                     })
-                },
+                }
             }
         })) as InitFuture;
 
@@ -1109,10 +1362,16 @@ impl ActiveServer {
         _headers: Option<std::collections::HashMap<String, String>>,
     ) -> Result<(Self, InitFuture), String> {
         let server_name = config.name.clone();
-        info!("Launching MCP server (WebSocket): {} at {}", server_name, _url);
+        info!(
+            "Launching MCP server (WebSocket): {} at {}",
+            server_name, _url
+        );
 
         // For now, just return an error instructing to use stdio directly
-        Err(format!("For WebSocket server '{}': Please use Stdio transport directly instead of WebSocket", server_name))
+        Err(format!(
+            "For WebSocket server '{}': Please use Stdio transport directly instead of WebSocket",
+            server_name
+        ))
     }
 
     // Send a request to the server and wait for a response
@@ -1161,5 +1420,3 @@ impl ActiveServer {
 struct ServerInitializeResult {
     capabilities: ServerCapabilities,
 }
-
-

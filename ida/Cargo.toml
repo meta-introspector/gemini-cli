@@ -1,0 +1,39 @@
+[package]
+name = "ida"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# Use the actual package name defined in ipc/Cargo.toml
+gemini-ipc = { path = "../ipc" }
+gemini-core = { path = "../core", optional = true } # Correct package name
+gemini-mcp = { path = "../mcp", optional = true }   # Correct package name (assuming)
+
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# IPC Library (Using tokio's built-in for Unix sockets)
+# If using interprocess or other lib, add it here.
+
+# Configuration (Example using figment)
+# figment = { version = "0.10", features = ["env", "toml"] }
+# clap = { version = "4", features = ["derive"], optional = true } # Made optional as it was removed from bin
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+# Error Handling
+anyhow = "1.0" # Keep anyhow for general error handling if needed
+thiserror = "1.0" # For specific error types
+
+# Other potential dependencies mentioned in README
+# embedding generation crate (e.g., rust-bert, sentence-transformers)
+chrono = { version = "0.4", features = ["serde"] } # For timestamps
+
+[[bin]]
+name = "ida-daemon"
+path = "src/bin/ida-daemon.rs" 

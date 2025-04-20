@@ -75,15 +75,15 @@ pub struct Args {
     /// Disable automatic memory storage
     #[arg(long, default_value_t = false)]
     pub disable_auto_memory: bool,
-    
+
     /// Run in filesystem MCP server mode
     #[arg(long, default_value_t = false)]
     pub filesystem_mcp: bool,
-    
+
     /// Run in command MCP server mode
     #[arg(long, default_value_t = false)]
     pub command_mcp: bool,
-    
+
     /// Run in memory store MCP server mode
     #[arg(long, default_value_t = false)]
     pub memory_store_mcp: bool,

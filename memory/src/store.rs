@@ -1,26 +1,26 @@
-use crate::memory::Memory;
 use crate::broker::McpHostInterface;
+use crate::memory::Memory;
 use crate::schema::EmbeddingModelVariant;
-use anyhow::{Context, Result, anyhow, Error};
-use arrow_array::{RecordBatch, RecordBatchIterator, Array, Float32Array};
+use anyhow::{anyhow, Context, Error, Result};
+use arrow_array::{Array, Float32Array, RecordBatch, RecordBatchIterator};
 use arrow_schema::SchemaRef;
-use futures::{TryStreamExt, StreamExt, stream::BoxStream};
-use lancedb::{connect, Connection as LanceConnection, Table as LanceTable};
+use futures::{stream::BoxStream, StreamExt, TryStreamExt};
 use lancedb::query::ExecutableQuery;
 use lancedb::query::*;
+use lancedb::{connect, Connection as LanceConnection, Table as LanceTable};
 use serde_json::{self, json};
 use std::fmt;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
-use uuid::Uuid;
-use tracing::{debug, info, warn};
-use std::pin::Pin;
 use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 // Add use statements for items from the modules (referenced via crate::...)
+use crate::config::{ensure_memory_db_dir, get_memory_db_path};
 use crate::schema::create_schema;
-use crate::config::{get_memory_db_path, ensure_memory_db_dir};
 // Import arrow_conversion functions needed
 use crate::arrow_conversion;
 
@@ -31,7 +31,7 @@ pub struct MemoryStore {
     schema: SchemaRef,
     embedding_model: EmbeddingModelVariant,
     mcp_host: Option<Arc<dyn McpHostInterface + Send + Sync>>,
-    _db_path: String, // Prefixed to silence warning
+    _db_path: String,    // Prefixed to silence warning
     _table_name: String, // Prefixed to silence warning
 }
 
@@ -66,7 +66,11 @@ impl MemoryStore {
         let embedding_dim = embedding_model.dimension();
 
         debug!("Connecting to LanceDB at: {}", uri);
-        debug!("Using embedding model variant: {} ({} dimensions)", embedding_model.as_str(), embedding_dim);
+        debug!(
+            "Using embedding model variant: {} ({} dimensions)",
+            embedding_model.as_str(),
+            embedding_dim
+        );
 
         let conn = connect(uri)
             .execute()
@@ -82,8 +86,13 @@ impl MemoryStore {
         let table = match table_result {
             Ok(table) => {
                 info!("Opened existing LanceDB table '{}'", table_name);
-                let indices = table.list_indices().await.context("Failed to list indices")?;
-                let fts_exists = indices.iter().any(|idx| idx.columns.contains(&"value".to_string()));
+                let indices = table
+                    .list_indices()
+                    .await
+                    .context("Failed to list indices")?;
+                let fts_exists = indices
+                    .iter()
+                    .any(|idx| idx.columns.contains(&"value".to_string()));
                 if !fts_exists {
                     info!("FTS index on 'value' column not found. Skipping creation (feature unavailable in lancedb v0.4).");
                     warn!("Skipping FTS index creation on 'value': FtsIndexBuilder not found in lancedb v0.4.");
@@ -94,7 +103,7 @@ impl MemoryStore {
             }
             Err(lancedb::Error::TableNotFound { .. }) => {
                 info!("Table '{}' not found, creating new table.", table_name);
-                 let empty_batch = RecordBatch::new_empty(schema.clone());
+                let empty_batch = RecordBatch::new_empty(schema.clone());
                 let initial_data = RecordBatchIterator::new(vec![Ok(empty_batch)], schema.clone());
 
                 let table = conn
@@ -113,7 +122,14 @@ impl MemoryStore {
             }
         };
 
-        Ok(Self { table, schema, embedding_model, mcp_host, _db_path: db_path.to_str().unwrap().to_string(), _table_name: table_name.to_string() })
+        Ok(Self {
+            table,
+            schema,
+            embedding_model,
+            mcp_host,
+            _db_path: db_path.to_str().unwrap().to_string(),
+            _table_name: table_name.to_string(),
+        })
     }
 
     /// Add a new memory to the store. Generates a unique ID and embedding.
@@ -149,34 +165,56 @@ impl MemoryStore {
         let id = Uuid::new_v4();
 
         // Define embedding generation closure with explicit type
-        let generate_embedding_fn: Arc<dyn Fn(String, EmbeddingModelVariant, Option<Arc<dyn McpHostInterface + Send + Sync>>) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, anyhow::Error>> + Send + 'static>> + Send + Sync> = Arc::new(
-            move |text: String, model: EmbeddingModelVariant, host: Option<Arc<dyn McpHostInterface + Send + Sync>>| {
-                 // Box the future immediately
-                 Box::pin(async move {
+        let generate_embedding_fn: Arc<
+            dyn Fn(
+                    String,
+                    EmbeddingModelVariant,
+                    Option<Arc<dyn McpHostInterface + Send + Sync>>,
+                ) -> Pin<
+                    Box<dyn Future<Output = Result<Vec<f32>, anyhow::Error>> + Send + 'static>,
+                > + Send
+                + Sync,
+        > = Arc::new(
+            move |text: String,
+                  model: EmbeddingModelVariant,
+                  host: Option<Arc<dyn McpHostInterface + Send + Sync>>| {
+                // Box the future immediately
+                Box::pin(async move {
                     let dimension = model.dimension();
                     if host.is_none() {
                         warn!("[Closure] No MCP host. Using zeros.");
                         return Ok(vec![0.0; dimension]);
                     }
                     let mcp = host.as_ref().unwrap();
-                    let params = json!({ "text": text, "is_query": false, "variant": model.as_str() });
+                    let params =
+                        json!({ "text": text, "is_query": false, "variant": model.as_str() });
                     match mcp.execute_tool("embedding", "embed", params).await {
                         Ok(result) => {
-                            let embedding = result.get("embedding").and_then(|v| v.as_array()).ok_or_else(|| anyhow!("Missing embedding"))?;
-                            let embedding_vec: Vec<f32> = embedding.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
+                            let embedding = result
+                                .get("embedding")
+                                .and_then(|v| v.as_array())
+                                .ok_or_else(|| anyhow!("Missing embedding"))?;
+                            let embedding_vec: Vec<f32> = embedding
+                                .iter()
+                                .filter_map(|v| v.as_f64().map(|f| f as f32))
+                                .collect();
                             if embedding_vec.len() != dimension {
-                                Err(anyhow!("Dim mismatch: got {}, expected {}", embedding_vec.len(), dimension))
+                                Err(anyhow!(
+                                    "Dim mismatch: got {}, expected {}",
+                                    embedding_vec.len(),
+                                    dimension
+                                ))
                             } else {
                                 Ok(embedding_vec)
                             }
-                        },
+                        }
                         Err(e) => {
                             warn!("[Closure] Failed embedding: {}. Using zeros.", e);
                             Ok(vec![0.0; dimension])
                         }
                     }
-                 })
-            }
+                })
+            },
         );
 
         // Generate embedding and convert to batch (token count calculated here)
@@ -188,12 +226,14 @@ impl MemoryStore {
             // Create a wrapping closure that matches the expected Fn(&str, ...) signature
             {
                 let generator = generate_embedding_fn.clone(); // Clone Arc
-                move |text: &str, model, host| { // Takes &str as expected
+                move |text: &str, model, host| {
+                    // Takes &str as expected
                     let text_owned = text.to_string(); // Convert to String
                     generator(text_owned, model, host) // Call the original Arc<dyn Fn(String, ...)> closure
                 }
-            }
-        ).await?;
+            },
+        )
+        .await?;
 
         // Correct: Wrap batch in Ok for the iterator
         let reader = RecordBatchIterator::new(vec![Ok(batch)], self.schema.clone());
@@ -226,29 +266,38 @@ impl MemoryStore {
         let delete_count = self.delete_by_key(key).await?;
 
         // Then, add the new version with metadata
-        self.add_memory(key, value, tags, session_id, source, related_keys).await?;
+        self.add_memory(key, value, tags, session_id, source, related_keys)
+            .await?;
 
         if delete_count > 0 {
             debug!("Updated memory with key: {}", key);
             Ok(true)
         } else {
-            debug!("Added new memory (no existing key '{}' found for update)", key);
+            debug!(
+                "Added new memory (no existing key '{}' found for update)",
+                key
+            );
             Ok(false) // Indicate that it was an add, not an update of existing
         }
     }
 
     /// Execute a generic query against the store
-    async fn execute_query<T: ExecutableQuery + Send + 'static>(&self, query: T) -> Result<BoxStream<'static, Result<RecordBatch, Error>>> {
+    async fn execute_query<T: ExecutableQuery + Send + 'static>(
+        &self,
+        query: T,
+    ) -> Result<BoxStream<'static, Result<RecordBatch, Error>>> {
         let stream = query.execute().await?;
         // Convert RecordBatchStream to our expected return type
-        let mapped_stream = stream.map(|batch_result| {
-            batch_result.map_err(|e| anyhow::Error::from(e))
-        });
+        let mapped_stream =
+            stream.map(|batch_result| batch_result.map_err(|e| anyhow::Error::from(e)));
         Ok(Box::pin(mapped_stream))
     }
 
     /// Convert a stream of RecordBatches to a Vec<Memory>.
-    async fn batch_stream_to_memories(&self, stream: BoxStream<'static, Result<RecordBatch, Error>>) -> Result<Vec<Memory>> {
+    async fn batch_stream_to_memories(
+        &self,
+        stream: BoxStream<'static, Result<RecordBatch, Error>>,
+    ) -> Result<Vec<Memory>> {
         let batches = stream.try_collect::<Vec<_>>().await?;
         let mut all_memories = Vec::new();
 
@@ -284,7 +333,8 @@ impl MemoryStore {
     /// Get all memories in the store.
     pub async fn get_all_memories(&self) -> Result<Vec<Memory>> {
         let query = self.table.query();
-        self.batch_stream_to_memories(self.execute_query(query).await?).await
+        self.batch_stream_to_memories(self.execute_query(query).await?)
+            .await
     }
 
     /// Delete memories by key, returning the number of items removed.
@@ -338,12 +388,14 @@ impl MemoryStore {
         match mcp.execute_tool("embedding", "embed", params).await {
             Ok(result) => {
                 // Extract the embedding vector from the result
-                let embedding = result.get("embedding")
+                let embedding = result
+                    .get("embedding")
                     .and_then(|v| v.as_array())
                     .ok_or_else(|| anyhow::anyhow!("Missing or invalid embedding in response"))?;
 
                 // Convert to Vec<f32>
-                let embedding_vec: Vec<f32> = embedding.iter()
+                let embedding_vec: Vec<f32> = embedding
+                    .iter()
                     .filter_map(|v| v.as_f64().map(|f| f as f32))
                     .collect();
 
@@ -357,9 +409,12 @@ impl MemoryStore {
                 }
 
                 Ok(embedding_vec)
-            },
+            }
             Err(e) => {
-                warn!("Failed to generate query embedding: {}. Using zeros instead.", e);
+                warn!(
+                    "Failed to generate query embedding: {}. Using zeros instead.",
+                    e
+                );
                 // Fallback to zeros on error
                 Ok(vec![0.0; dimension])
             }
@@ -383,12 +438,10 @@ impl MemoryStore {
         }
 
         // Create a query for vector search with proper error handling
-        let vector_query = match self.table.query()
-            .limit(top_k)
-            .nearest_to(query_vector) {
-                Ok(q) => q,
-                Err(e) => return Err(anyhow!("Failed to create vector query: {}", e))
-            };
+        let vector_query = match self.table.query().limit(top_k).nearest_to(query_vector) {
+            Ok(q) => q,
+            Err(e) => return Err(anyhow!("Failed to create vector query: {}", e)),
+        };
 
         // Execute the query
         let result = self.execute_query(vector_query).await?;
@@ -420,7 +473,8 @@ impl MemoryStore {
         }
 
         // Sort by similarity score (descending)
-        memories_with_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        memories_with_scores
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         Ok(memories_with_scores)
     }
@@ -457,18 +511,23 @@ impl MemoryStore {
                 let start_ts = start.duration_since(UNIX_EPOCH)?.as_secs() as i64;
                 let end_ts = end.duration_since(UNIX_EPOCH)?.as_secs() as i64;
                 if start_ts > end_ts {
-                    return Err(anyhow::anyhow!("Start time must be before end time in search"));
+                    return Err(anyhow::anyhow!(
+                        "Start time must be before end time in search"
+                    ));
                 }
-                filters.push(format!("(timestamp >= {} AND timestamp <= {})", start_ts, end_ts));
-            },
+                filters.push(format!(
+                    "(timestamp >= {} AND timestamp <= {})",
+                    start_ts, end_ts
+                ));
+            }
             (Some(start), None) => {
                 let start_ts = start.duration_since(UNIX_EPOCH)?.as_secs() as i64;
                 filters.push(format!("timestamp >= {}", start_ts));
-            },
+            }
             (None, Some(end)) => {
                 let end_ts = end.duration_since(UNIX_EPOCH)?.as_secs() as i64;
                 filters.push(format!("timestamp <= {}", end_ts));
-            },
+            }
             (None, None) => {}
         }
 
@@ -492,9 +551,12 @@ impl MemoryStore {
                     Ok(vector_query) => {
                         let result = self.execute_query(vector_query).await?;
                         return self.batch_stream_to_memories(result).await;
-                    },
+                    }
                     Err(e) => {
-                        warn!("Could not create vector query, falling back to filter only: {}", e);
+                        warn!(
+                            "Could not create vector query, falling back to filter only: {}",
+                            e
+                        );
                         // Continue with regular query
                     }
                 }
@@ -515,11 +577,15 @@ impl MemoryStore {
     /// Retrieves memories created or updated within the specified duration from the present time.
     pub async fn get_recent(&self, duration: Duration) -> Result<Vec<Memory>> {
         let now = SystemTime::now();
-        let cutoff_time = now.checked_sub(duration)
+        let cutoff_time = now
+            .checked_sub(duration)
             .context("Failed to calculate cutoff time")?;
         let cutoff_timestamp = cutoff_time.duration_since(UNIX_EPOCH)?.as_secs() as i64;
 
-        debug!("Getting recent memories created after timestamp: {}", cutoff_timestamp);
+        debug!(
+            "Getting recent memories created after timestamp: {}",
+            cutoff_timestamp
+        );
         let filter = format!("timestamp >= {}", cutoff_timestamp);
         let query = self.table.query().only_if(filter);
         let result = self.execute_query(query).await?;
@@ -535,8 +601,14 @@ impl MemoryStore {
             return Err(anyhow::anyhow!("Start time must be before end time"));
         }
 
-        debug!("Getting memories in range: {} - {}", start_timestamp, end_timestamp);
-        let filter = format!("timestamp >= {} AND timestamp <= {}", start_timestamp, end_timestamp);
+        debug!(
+            "Getting memories in range: {} - {}",
+            start_timestamp, end_timestamp
+        );
+        let filter = format!(
+            "timestamp >= {} AND timestamp <= {}",
+            start_timestamp, end_timestamp
+        );
         let query = self.table.query().only_if(filter);
         let result = self.execute_query(query).await?;
         self.batch_stream_to_memories(result).await
@@ -545,8 +617,7 @@ impl MemoryStore {
     /// Exports all memories in the store as a JSON string.
     pub async fn export_all_memories_json(&self) -> Result<String> {
         let all_memories = self.get_all_memories().await?;
-        serde_json::to_string_pretty(&all_memories)
-            .context("Failed to serialize memories to JSON")
+        serde_json::to_string_pretty(&all_memories).context("Failed to serialize memories to JSON")
     }
 }
 

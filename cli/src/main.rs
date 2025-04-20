@@ -4,20 +4,18 @@ use dotenv::dotenv;
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::sync::Arc;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
-use log::{debug, info, error};
+use std::sync::Arc;
 
 mod app;
 mod cli;
 mod config;
 mod history;
+mod ipc_client;
 mod logging;
 mod memory_broker;
 mod output;
-mod utils;
-mod ipc_client;  // Add the new IPC client module
+mod utils; // Add the new IPC client module
 
 // Import the new context struct
 use crate::app::SessionContext;
@@ -25,7 +23,7 @@ use crate::app::SessionContext;
 use gemini_core::client::GeminiClient;
 use gemini_core::config::{GeminiConfig, get_default_config_dir, get_default_config_file};
 // Import and re-export needed functionality from gemini_mcp
-use gemini_mcp::{McpHost, load_mcp_servers, build_mcp_system_prompt, sanitize_json_schema};
+use gemini_mcp::{McpHost, build_mcp_system_prompt, load_mcp_servers, sanitize_json_schema};
 // Import MemoryStore
 use gemini_memory::{MemoryStore, broker::McpHostInterface};
 // Import our config extension and memory broker
@@ -52,16 +50,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Parse command-line arguments
     let args = Args::parse();
-    
+
     // Handle MCP server modes
     if args.filesystem_mcp {
         return gemini_mcp::filesystem::run().await;
     } else if args.command_mcp {
         return gemini_mcp::command::run().await;
     } else if args.memory_store_mcp {
-        return gemini_mcp::memory_store::run().await.map_err(|e| e as Box<dyn Error>);
+        return gemini_mcp::memory_store::run()
+            .await
+            .map_err(|e| e as Box<dyn Error>);
     }
-    
+
     // Use gemini_core::config helpers
     let config_dir = get_default_config_dir("gemini-cli")?;
     fs::create_dir_all(&config_dir)?;
@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Try to connect to the MCP daemon first
     let mut mcp_client: Option<McpDaemonClient> = None;
     let mut mcp_host: Option<McpHost> = None;
-    
+
     let socket_path = match McpDaemonClient::get_default_socket_path() {
         Ok(path) => {
             log_info(&format!("Using daemon socket path: {}", path.display()));
@@ -140,7 +140,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             PathBuf::new()
         }
     };
-    
+
     if !socket_path.as_os_str().is_empty() {
         let client = McpDaemonClient::new(socket_path);
         if let Ok(true) = client.test_connection().await {
@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             log_info("Could not connect to MCP daemon, will try direct MCP host initialization");
         }
     }
-    
+
     // If daemon connection failed, fall back to direct MCP host initialization
     if mcp_client.is_none() {
         match load_mcp_servers() {
@@ -177,36 +177,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Memory Store Initialization
-    let mcp_interface: Option<Arc<dyn McpHostInterface + Send + Sync + 'static>> = if let Some(client) = &mcp_client {
-        // Use the daemon client for MemoryStore if available
-        Some(Arc::new(client.clone()) as Arc<dyn McpHostInterface + Send + Sync + 'static>)
-    } else if let Some(host) = &mcp_host {
-        // Fall back to direct McpHost if daemon isn't available
-        Some(Arc::new(host.clone()) as Arc<dyn McpHostInterface + Send + Sync + 'static>)
-    } else {
-        // No MCP available at all
-        None
-    };
-    
+    let mcp_interface: Option<Arc<dyn McpHostInterface + Send + Sync + 'static>> =
+        if let Some(client) = &mcp_client {
+            // Use the daemon client for MemoryStore if available
+            Some(Arc::new(client.clone()) as Arc<dyn McpHostInterface + Send + Sync + 'static>)
+        } else if let Some(host) = &mcp_host {
+            // Fall back to direct McpHost if daemon isn't available
+            Some(Arc::new(host.clone()) as Arc<dyn McpHostInterface + Send + Sync + 'static>)
+        } else {
+            // No MCP available at all
+            None
+        };
+
     // Create a standard memory store with our async broker
     let memory_store = match MemoryStore::new(None, None, mcp_interface).await {
         Ok(store) => {
             // Use our memory broker with async capability
             let broker = MemoryBroker::new(
                 store,
-                config.async_memory_enabled() // Use the async configuration flag
+                config.async_memory_enabled(), // Use the async configuration flag
             );
-            
+
             if config.async_memory_enabled() {
                 log_info("Memory store initialized with async embedding enabled");
             } else {
                 log_info("Memory store initialized with synchronous processing");
             }
-            
+
             Some(broker)
         }
         Err(e) => {
-            log_error(&format!("Failed to initialize MemoryStore: {}. Memory features disabled.", e));
+            log_error(&format!(
+                "Failed to initialize MemoryStore: {}. Memory features disabled.",
+                e
+            ));
             None
         }
     };
@@ -239,7 +243,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "{}",
             "\nTo maintain chat history across commands, run:".cyan()
         );
-        println!("export GEMINI_SESSION_ID=\"{}\"", session_context.session_id); // Use context
+        println!(
+            "export GEMINI_SESSION_ID=\"{}\"",
+            session_context.session_id
+        ); // Use context
         println!();
     }
 

@@ -1,13 +1,13 @@
 // Utility functions for the CLI
 
-use crate::logging::log_error;
-use colored::*;
 use crate::McpProvider;
-use serde_json::{json, Value};
-use std::io::{self, Write};
-use tokio::time::{timeout, Duration};
-use std::error::Error;
+use crate::logging::log_error;
 use crate::memory_broker::MemoryBroker;
+use colored::*;
+use serde_json::{Value, json};
+use std::error::Error;
+use std::io::{self, Write};
+use tokio::time::{Duration, timeout};
 
 // Represents the result of a tool execution
 pub enum ToolExecutionResult {
@@ -19,9 +19,9 @@ pub enum ToolExecutionResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmationLevel {
-    None,    // No confirmation needed
+    None,     // No confirmation needed
     Standard, // Regular confirmation (y/n/a)
-    Strict,  // Stricter confirmation (y/n only)
+    Strict,   // Stricter confirmation (y/n only)
 }
 
 // Configuration for tool execution
@@ -53,27 +53,29 @@ pub async fn execute_tool_with_confirmation(
 ) -> ToolExecutionResult {
     // Use default config if none provided
     let config = config.unwrap_or_default();
-    
+
     // Parse qualified name
     let qualified_name = function_name.replace(".", "/");
     let parts: Vec<&str> = qualified_name.splitn(2, "/").collect();
-    
+
     if parts.len() != 2 {
         return ToolExecutionResult::Failure(format!(
             "Invalid function call name format: {}",
             function_name
         ));
     }
-    
+
     let server_name = parts[0];
     let tool_name = parts[1];
-    
+
     // Check if confirmation is needed
     let needs_confirmation = match config.confirmation_level {
         ConfirmationLevel::None => false,
-        _ => !config.auto_approve_tools.contains(&function_name.to_string()),
+        _ => !config
+            .auto_approve_tools
+            .contains(&function_name.to_string()),
     };
-    
+
     // Get confirmation if needed
     let mut should_execute = true;
     if needs_confirmation {
@@ -83,22 +85,28 @@ pub async fn execute_tool_with_confirmation(
             tool_name.cyan(),
             server_name.cyan()
         );
-        println!("{}", serde_json::to_string_pretty(&arguments).unwrap_or_default());
-        
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arguments).unwrap_or_default()
+        );
+
         match config.confirmation_level {
             ConfirmationLevel::Standard => {
-                print!("{} (y)es/(n)o/(a)lways allow this tool: ", "Proceed?".yellow());
+                print!(
+                    "{} (y)es/(n)o/(a)lways allow this tool: ",
+                    "Proceed?".yellow()
+                );
             }
             ConfirmationLevel::Strict => {
                 print!("{} (y)es/(n)o: ", "Proceed?".yellow());
             }
             _ => {}
         }
-        
+
         io::stdout().flush().ok();
         let mut response = String::new();
         io::stdin().read_line(&mut response).ok();
-        
+
         match response.trim().to_lowercase().as_str() {
             "y" | "yes" => {
                 should_execute = true;
@@ -114,7 +122,7 @@ pub async fn execute_tool_with_confirmation(
             }
         }
     }
-    
+
     if should_execute {
         println!(
             "{} Calling function {} on server {}",
@@ -122,31 +130,33 @@ pub async fn execute_tool_with_confirmation(
             tool_name.cyan(),
             server_name.cyan()
         );
-        
+
         // Match on the provider and handle timeout/execution within each arm
         match provider {
             McpProvider::Host(Some(host)) => {
                 match timeout(
                     Duration::from_secs(config.timeout_seconds),
-                    host.execute_tool(server_name, tool_name, arguments.clone())
-                ).await {
-                    Ok(result) => {
-                        match result {
-                            Ok(result_value) => {
-                                println!(
-                                    "{}: {}",
-                                    "Result".green(),
-                                    serde_json::to_string_pretty(&result_value).unwrap_or_else(|_| result_value.to_string())
-                                );
-                                ToolExecutionResult::Success(result_value)
-                            }
-                            Err(e) => {
-                                let error_msg = format!("Function call {} failed: {}", function_name, e);
-                                log_error(&error_msg);
-                                ToolExecutionResult::Failure(error_msg)
-                            }
+                    host.execute_tool(server_name, tool_name, arguments.clone()),
+                )
+                .await
+                {
+                    Ok(result) => match result {
+                        Ok(result_value) => {
+                            println!(
+                                "{}: {}",
+                                "Result".green(),
+                                serde_json::to_string_pretty(&result_value)
+                                    .unwrap_or_else(|_| result_value.to_string())
+                            );
+                            ToolExecutionResult::Success(result_value)
                         }
-                    }
+                        Err(e) => {
+                            let error_msg =
+                                format!("Function call {} failed: {}", function_name, e);
+                            log_error(&error_msg);
+                            ToolExecutionResult::Failure(error_msg)
+                        }
+                    },
                     Err(_) => {
                         let timeout_msg = format!(
                             "Function call {} timed out after {} seconds",
@@ -156,29 +166,31 @@ pub async fn execute_tool_with_confirmation(
                         ToolExecutionResult::Timeout
                     }
                 }
-            },
+            }
             McpProvider::Client(client) => {
-                 match timeout(
+                match timeout(
                     Duration::from_secs(config.timeout_seconds),
-                    client.execute_tool(server_name, tool_name, arguments.clone())
-                ).await {
-                    Ok(result) => {
-                        match result {
-                            Ok(result_value) => {
-                                println!(
-                                    "{}: {}",
-                                    "Result".green(),
-                                    serde_json::to_string_pretty(&result_value).unwrap_or_else(|_| result_value.to_string())
-                                );
-                                ToolExecutionResult::Success(result_value)
-                            }
-                            Err(e) => {
-                                let error_msg = format!("Function call {} failed: {}", function_name, e);
-                                log_error(&error_msg);
-                                ToolExecutionResult::Failure(error_msg)
-                            }
+                    client.execute_tool(server_name, tool_name, arguments.clone()),
+                )
+                .await
+                {
+                    Ok(result) => match result {
+                        Ok(result_value) => {
+                            println!(
+                                "{}: {}",
+                                "Result".green(),
+                                serde_json::to_string_pretty(&result_value)
+                                    .unwrap_or_else(|_| result_value.to_string())
+                            );
+                            ToolExecutionResult::Success(result_value)
                         }
-                    }
+                        Err(e) => {
+                            let error_msg =
+                                format!("Function call {} failed: {}", function_name, e);
+                            log_error(&error_msg);
+                            ToolExecutionResult::Failure(error_msg)
+                        }
+                    },
                     Err(_) => {
                         let timeout_msg = format!(
                             "Function call {} timed out after {} seconds",
@@ -201,33 +213,26 @@ pub async fn execute_tool_with_confirmation(
 
 /// Converts tool execution result to a function response part
 pub fn tool_result_to_function_response(
-    function_name: &str, 
-    result: ToolExecutionResult
+    function_name: &str,
+    result: ToolExecutionResult,
 ) -> gemini_core::types::Part {
     use gemini_core::types::Part;
-    
+
     match result {
         ToolExecutionResult::Success(value) => {
             Part::function_response(function_name.to_string(), value)
         }
         ToolExecutionResult::Failure(error) => {
-            Part::function_response(
-                function_name.to_string(),
-                json!({ "error": error })
-            )
+            Part::function_response(function_name.to_string(), json!({ "error": error }))
         }
-        ToolExecutionResult::Timeout => {
-            Part::function_response(
-                function_name.to_string(),
-                json!({ "error": "Tool execution timed out" })
-            )
-        }
-        ToolExecutionResult::Cancelled => {
-            Part::function_response(
-                function_name.to_string(),
-                json!({ "error": "Tool execution cancelled by user" })
-            )
-        }
+        ToolExecutionResult::Timeout => Part::function_response(
+            function_name.to_string(),
+            json!({ "error": "Tool execution timed out" }),
+        ),
+        ToolExecutionResult::Cancelled => Part::function_response(
+            function_name.to_string(),
+            json!({ "error": "Tool execution cancelled by user" }),
+        ),
     }
 }
 

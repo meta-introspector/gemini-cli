@@ -1,16 +1,18 @@
 use env_logger;
+use gemini_ipc::daemon_messages::{
+    BrokerCapabilities, DaemonRequest, DaemonResponse, DaemonResult, ToolDefinition,
+};
 use gemini_mcp::{load_mcp_servers, McpHost};
 use log::{debug, error, info, warn};
+use serde_json::json;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use std::fs;
-use ipc::daemon_messages::{DaemonRequest, DaemonResponse, DaemonResult, BrokerCapabilities, ToolDefinition};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use serde_json::json;
 
 // Helper function to determine the socket path
 fn get_socket_path() -> Result<PathBuf, String> {
@@ -18,55 +20,65 @@ fn get_socket_path() -> Result<PathBuf, String> {
         .or_else(dirs::data_local_dir)
         .ok_or_else(|| "Could not determine runtime or data local directory".to_string())?;
     let socket_dir = base_dir.join("gemini-cli");
-    fs::create_dir_all(&socket_dir).map_err(|e| format!("Failed to create socket directory: {}", e))?;
+    fs::create_dir_all(&socket_dir)
+        .map_err(|e| format!("Failed to create socket directory: {}", e))?;
     Ok(socket_dir.join("mcp-hostd.sock"))
 }
 
 // Extension trait to add embedding and broker capabilities functions
 trait McpHostExtensions {
-    async fn generate_embedding(&self, text: &str, model_variant: &str) -> Result<Vec<f32>, String>;
+    async fn generate_embedding(&self, text: &str, model_variant: &str)
+        -> Result<Vec<f32>, String>;
     async fn get_broker_capabilities(&self) -> Result<BrokerCapabilities, String>;
 }
 
 // Implement extensions for McpHost
 impl McpHostExtensions for Arc<McpHost> {
-    async fn generate_embedding(&self, text: &str, model_variant: &str) -> Result<Vec<f32>, String> {
+    async fn generate_embedding(
+        &self,
+        text: &str,
+        model_variant: &str,
+    ) -> Result<Vec<f32>, String> {
         // Forward to embedding server using execute_tool
         let params = json!({
             "text": text,
             "is_query": false,
             "variant": model_variant
         });
-        
+
         match self.execute_tool("embedding", "embed", params).await {
             Ok(result) => {
                 // Extract the embedding vector from the result
-                let embedding = result.get("embedding")
+                let embedding = result
+                    .get("embedding")
                     .and_then(|v| v.as_array())
                     .ok_or_else(|| "Missing or invalid embedding in response".to_string())?;
-                
+
                 // Convert to Vec<f32>
-                let embedding_vec: Vec<f32> = embedding.iter()
+                let embedding_vec: Vec<f32> = embedding
+                    .iter()
                     .filter_map(|v| v.as_f64().map(|f| f as f32))
                     .collect();
-                
+
                 Ok(embedding_vec)
-            },
-            Err(e) => Err(format!("Failed to generate embedding: {}", e))
+            }
+            Err(e) => Err(format!("Failed to generate embedding: {}", e)),
         }
     }
 
     async fn get_broker_capabilities(&self) -> Result<BrokerCapabilities, String> {
         // Get capabilities and filter for the ones needed by the broker
         let all_caps = self.get_all_capabilities().await;
-        
+
         // Convert to broker capabilities format
-        let tools = all_caps.tools.iter()
+        let tools = all_caps
+            .tools
+            .iter()
             .map(|tool| ToolDefinition {
                 name: tool.name.clone(),
             })
             .collect();
-        
+
         Ok(BrokerCapabilities { tools })
     }
 }
@@ -104,7 +116,7 @@ async fn main() {
         Err(e) => {
             error!("Failed to load MCP server configurations: {}", e);
             // Clean up the socket dir we might have created
-            let _ = fs::remove_file(&socket_path); 
+            let _ = fs::remove_file(&socket_path);
             std::process::exit(1);
         }
     };
@@ -117,8 +129,8 @@ async fn main() {
         }
         Err(e) => {
             error!("Failed to initialize MCP Host: {}", e);
-             // Clean up the socket dir we might have created
-            let _ = fs::remove_file(&socket_path); 
+            // Clean up the socket dir we might have created
+            let _ = fs::remove_file(&socket_path);
             std::process::exit(1);
         }
     };
@@ -149,7 +161,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    
+
     let mut sigterm = match signal(SignalKind::terminate()) {
         Ok(signal) => signal,
         Err(e) => {
@@ -158,7 +170,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    
+
     let shutdown_tx_int = shutdown_tx.clone();
     let shutdown_tx_term = shutdown_tx;
 
@@ -185,7 +197,7 @@ async fn main() {
             Ok((stream, _addr)) = listener.accept() => {
                 info!("Accepted new IPC connection");
                 let host_clone = Arc::clone(&mcp_host); // Clone Arc for the task
-                
+
                 // Spawn a task to handle this client connection
                 tokio::spawn(async move {
                     handle_client(stream, host_clone).await;
@@ -219,7 +231,7 @@ async fn main() {
 
     // Give tasks a moment to complete their cleanup
     sleep(Duration::from_millis(100)).await;
-    
+
     info!("MCP Host Daemon terminated");
 }
 
@@ -295,32 +307,45 @@ async fn process_request(request: DaemonRequest, host: Arc<McpHost>) -> DaemonRe
             info!("Processing GetCapabilities request");
             match host.get_all_capabilities().await {
                 caps => {
-                    info!("Retrieved capabilities for {} tools and {} resources", 
-                         caps.tools.len(), caps.resources.len());
+                    info!(
+                        "Retrieved capabilities for {} tools and {} resources",
+                        caps.tools.len(),
+                        caps.resources.len()
+                    );
                     DaemonResponse::success(DaemonResult::Capabilities(caps))
                 }
             }
-        },
+        }
         DaemonRequest::ExecuteTool { server, tool, args } => {
-            info!("Executing tool '{}' on server '{}' with args: {}", 
-                  tool, server, serde_json::to_string(&args).unwrap_or_else(|_| "unable to serialize".to_string()));
-            
+            info!(
+                "Executing tool '{}' on server '{}' with args: {}",
+                tool,
+                server,
+                serde_json::to_string(&args).unwrap_or_else(|_| "unable to serialize".to_string())
+            );
+
             match host.execute_tool(&server, &tool, args).await {
                 Ok(result_value) => {
-                    debug!("Tool execution succeeded with result: {}", 
-                          serde_json::to_string(&result_value).unwrap_or_else(|_| "unable to serialize".to_string()));
+                    debug!(
+                        "Tool execution succeeded with result: {}",
+                        serde_json::to_string(&result_value)
+                            .unwrap_or_else(|_| "unable to serialize".to_string())
+                    );
                     DaemonResponse::success(DaemonResult::ExecutionOutput(result_value))
                 }
                 Err(e) => {
-                    error!("Tool execution failed: {} on server {} - Error: {}", tool, server, e);
-                    DaemonResponse::error(format!(
-                        "Tool execution error: {}",
-                        e
-                    ))
+                    error!(
+                        "Tool execution failed: {} on server {} - Error: {}",
+                        tool, server, e
+                    );
+                    DaemonResponse::error(format!("Tool execution error: {}", e))
                 }
             }
-        },
-        DaemonRequest::GenerateEmbedding { text, model_variant } => {
+        }
+        DaemonRequest::GenerateEmbedding {
+            text,
+            model_variant,
+        } => {
             info!("Generating embedding with model variant: {}", model_variant);
             // Forward to memory broker if available, otherwise return error
             match host.generate_embedding(&text, &model_variant).await {
@@ -333,13 +358,16 @@ async fn process_request(request: DaemonRequest, host: Arc<McpHost>) -> DaemonRe
                     DaemonResponse::error(format!("Error generating embedding: {}", e))
                 }
             }
-        },
+        }
         DaemonRequest::GetBrokerCapabilities => {
             info!("Getting broker capabilities");
             // Check if memory broker is available and get its capabilities
             match host.get_broker_capabilities().await {
                 Ok(caps) => {
-                    info!("Retrieved broker capabilities with {} tools", caps.tools.len());
+                    info!(
+                        "Retrieved broker capabilities with {} tools",
+                        caps.tools.len()
+                    );
                     DaemonResponse::success(DaemonResult::BrokerCapabilities(caps))
                 }
                 Err(e) => {
@@ -347,8 +375,7 @@ async fn process_request(request: DaemonRequest, host: Arc<McpHost>) -> DaemonRe
                     DaemonResponse::error(format!("Error getting broker capabilities: {}", e))
                 }
             }
-        }
-        // Handle other request types here in the future
+        } // Handle other request types here in the future
     }
 }
 
@@ -363,11 +390,11 @@ async fn write_response<W: AsyncWriteExt + Unpin>(
             error!("Failed to serialize response: {}", e);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Failed to serialize response: {}", e)
+                format!("Failed to serialize response: {}", e),
             ));
         }
     };
-    
+
     let response_len = response_bytes.len() as u32;
     debug!("Sending response with length: {} bytes", response_len);
 
@@ -376,19 +403,19 @@ async fn write_response<W: AsyncWriteExt + Unpin>(
         error!("Failed to write response length: {}", e);
         return Err(e);
     }
-    
+
     // Then write the response data
     if let Err(e) = writer.write_all(&response_bytes).await {
         error!("Failed to write response data: {}", e);
         return Err(e);
     }
-    
+
     // Flush to ensure all data is sent
     if let Err(e) = writer.flush().await {
         error!("Failed to flush response: {}", e);
         return Err(e);
     }
-    
+
     debug!("Response successfully written and flushed");
     Ok(())
-} 
+}

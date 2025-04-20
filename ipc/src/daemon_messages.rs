@@ -17,10 +17,7 @@ pub enum DaemonRequest {
         args: Value,
     },
     /// Request to generate an embedding for text using the embedding server.
-    GenerateEmbedding {
-        text: String,
-        model_variant: String,
-    },
+    GenerateEmbedding { text: String, model_variant: String },
     /// Request to get broker capabilities for MemoryStore
     GetBrokerCapabilities,
     // Future requests can be added here, e.g., ShutdownDaemon, ListServers, etc.
@@ -104,4 +101,4 @@ impl DaemonResponse {
             payload: ResponsePayload::Error(DaemonError { message }),
         }
     }
-} 
+}

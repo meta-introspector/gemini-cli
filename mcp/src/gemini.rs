@@ -1,12 +1,12 @@
 // This module handles conversion between MCP capabilities and Gemini function calling formats,
 // and processing function calls.
 
-use gemini_core::rpc_types::{ Resource, Tool };
-use serde::{ Deserialize, Serialize };
-use serde_json::{ json, Value };
-use log::debug;
-use std::collections::HashMap;
 use colored::Colorize;
+use gemini_core::rpc_types::{Resource, Tool};
+use log::debug;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
 
 /// Represents a Gemini function parameter
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -56,7 +56,8 @@ pub fn convert_mcp_tools_to_gemini_functions(tools: &[Tool]) -> Vec<FunctionDef>
             })
         };
 
-        let description = tool.description
+        let description = tool
+            .description
             .clone()
             .unwrap_or_else(|| "No description provided".to_string());
 
@@ -126,7 +127,8 @@ pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String
     if !tools.is_empty() {
         prompt.push_str("## Available Tools\n\n");
         for tool in tools {
-            let description = tool.description
+            let description = tool
+                .description
                 .clone()
                 .unwrap_or_else(|| "No description provided".to_string());
 
@@ -141,7 +143,8 @@ pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String
     if !resources.is_empty() {
         prompt.push_str("## Available Resources\n\n");
         for resource in resources {
-            let resource_desc = resource.description
+            let resource_desc = resource
+                .description
                 .clone()
                 .unwrap_or_else(|| "No description provided".to_string());
             prompt.push_str(&format!("* **{}**: {}\n", resource.name, resource_desc));
@@ -150,12 +153,9 @@ pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String
     }
 
     // Add specific instructions for common tools
-    if
-        tools
-            .iter()
-            .any(
-                |tool| (tool.name.contains("/store_memory") || tool.name.contains(".store_memory"))
-            )
+    if tools
+        .iter()
+        .any(|tool| (tool.name.contains("/store_memory") || tool.name.contains(".store_memory")))
     {
         prompt.push_str("\n## Memory Storage\n\n");
         prompt.push_str(
@@ -163,17 +163,12 @@ pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String
         );
     }
 
-    if
-        tools
-            .iter()
-            .any(
-                |tool|
-                    tool.name.contains("/get_relevant_memories") ||
-                    tool.name.contains(".get_relevant_memories") ||
-                    tool.name.contains("/retrieve_memory") ||
-                    tool.name.contains(".retrieve_memory")
-            )
-    {
+    if tools.iter().any(|tool| {
+        tool.name.contains("/get_relevant_memories")
+            || tool.name.contains(".get_relevant_memories")
+            || tool.name.contains("/retrieve_memory")
+            || tool.name.contains(".retrieve_memory")
+    }) {
         prompt.push_str("\n## Memory Retrieval\n\n");
         prompt.push_str(
             "You can retrieve information from your persistent memory. When a user asks about something you might have stored previously, you should check your memory.\n\n"
@@ -257,7 +252,7 @@ pub fn generate_gemini_function_declarations(tools: &[Tool]) -> Option<Vec<Funct
 /// Process a detected function call from Gemini and ask for user confirmation
 pub async fn process_function_call(
     function_call: &FunctionCall,
-    mcp_host: &crate::host::McpHost
+    mcp_host: &crate::host::McpHost,
 ) -> Result<Value, String> {
     // Extract the server and tool name from the qualified name
     // Convert dots back to slashes for MCP host compatibility
@@ -265,8 +260,7 @@ pub async fn process_function_call(
     if std::env::var("DEBUG").is_ok() {
         println!(
             "[DEBUG] Processing function call: original name='{}', converted name='{}'",
-            &function_call.name,
-            qualified_name
+            &function_call.name, qualified_name
         );
     }
 
@@ -283,7 +277,11 @@ pub async fn process_function_call(
 
     if !should_auto_execute {
         // Ask for user confirmation
-        println!("\n{} {}:", "Tool execution requested:".yellow().bold(), qualified_name.green());
+        println!(
+            "\n{} {}:",
+            "Tool execution requested:".yellow().bold(),
+            qualified_name.green()
+        );
         // Pretty print the arguments
         if let Ok(pretty_json) = serde_json::to_string_pretty(&function_call.arguments) {
             println!("{}", pretty_json);
@@ -292,9 +290,11 @@ pub async fn process_function_call(
         }
 
         let mut confirmation_input = String::new();
-        println!("{}", "Do you want to allow this tool execution? [Y/n/a(lways)]".cyan());
-        std::io
-            ::stdin()
+        println!(
+            "{}",
+            "Do you want to allow this tool execution? [Y/n/a(lways)]".cyan()
+        );
+        std::io::stdin()
             .read_line(&mut confirmation_input)
             .map_err(|e| format!("Failed to read confirmation: {}", e))?;
 
@@ -308,10 +308,15 @@ pub async fn process_function_call(
     } else {
         // Auto-execute the function without confirmation
         if std::env::var("DEBUG").is_ok() {
-            println!("[DEBUG] Executing tool: server='{}', tool='{}'", server_name, tool_name);
+            println!(
+                "[DEBUG] Executing tool: server='{}', tool='{}'",
+                server_name, tool_name
+            );
         }
 
-        return mcp_host.execute_tool(server_name, tool_name, function_call.arguments.clone()).await;
+        return mcp_host
+            .execute_tool(server_name, tool_name, function_call.arguments.clone())
+            .await;
     }
 
     Ok(Value::Null)

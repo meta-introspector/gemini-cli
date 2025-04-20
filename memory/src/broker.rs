@@ -1,9 +1,9 @@
+use crate::store::MemoryStore;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::error::Error;
-use crate::store::MemoryStore;
-use anyhow::{Result, anyhow};
 use tracing::debug;
 
 // Use shared RPC types from gemini_core (specific exports)
@@ -66,8 +66,7 @@ async fn get_memory_context(
 ) -> Result<String> {
     debug!(
         "Retrieving top {} memories similar to query (min relevance: {})",
-        top_k,
-        min_relevance
+        top_k, min_relevance
     );
     let similar_memories = store
         .get_semantically_similar(query, top_k, min_relevance)
@@ -116,8 +115,7 @@ pub async fn enhance_prompt(
 
 User Query:
 {}",
-            memory_context,
-            prompt
+            memory_context, prompt
         ))
     }
 }

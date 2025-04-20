@@ -1,17 +1,22 @@
+use crate::broker::McpHostInterface;
 use crate::memory::Memory;
-use crate::schema::EmbeddingModelVariant;
-use crate::broker::McpHostInterface; // Assuming this is needed for generate_embedding call within batch fn
+use crate::schema::EmbeddingModelVariant; // Assuming this is needed for generate_embedding call within batch fn
 
-use anyhow::{Context, Result, anyhow};
-use arrow_array::{RecordBatch, types::{Int64Type, Float32Type}, Array};
+use anyhow::{anyhow, Context, Result};
+use arrow_array::builder::{
+    FixedSizeListBuilder, Float32Builder, Int64Builder, ListBuilder, StringBuilder,
+};
 use arrow_array::cast::AsArray;
-use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder, Float32Builder, FixedSizeListBuilder};
+use arrow_array::{
+    types::{Float32Type, Int64Type},
+    Array, RecordBatch,
+};
 use arrow_schema::{DataType, Field, SchemaRef};
 use futures::future;
 use log::warn;
 use std::sync::Arc;
-use uuid::Uuid;
 use tiktoken_rs::cl100k_base;
+use uuid::Uuid;
 
 /// Convert a Vec<Memory> (plus a generated UUID) to an Arrow RecordBatch.
 /// Generates embeddings for each memory's value field if MCP is available.
@@ -20,7 +25,11 @@ pub(crate) async fn memories_to_batch_with_embeddings(
     schema: SchemaRef,
     embedding_model: EmbeddingModelVariant, // Pass embedding model info
     mcp_host: Option<Arc<dyn McpHostInterface + Send + Sync>>, // Pass MCP host
-    generate_embedding_fn: impl Fn(&str, EmbeddingModelVariant, Option<Arc<dyn McpHostInterface + Send + Sync>>) -> future::BoxFuture<'static, Result<Vec<f32>>> // Function to generate embeddings
+    generate_embedding_fn: impl Fn(
+        &str,
+        EmbeddingModelVariant,
+        Option<Arc<dyn McpHostInterface + Send + Sync>>,
+    ) -> future::BoxFuture<'static, Result<Vec<f32>>>, // Function to generate embeddings
 ) -> Result<RecordBatch> {
     // Get tokenizer instance once
     let bpe = cl100k_base().context("Failed to load cl100k_base tokenizer")?;
@@ -32,7 +41,7 @@ pub(crate) async fn memories_to_batch_with_embeddings(
     let mut timestamp_builder = Int64Builder::new();
     let mut tags_builder = ListBuilder::new(StringBuilder::new());
     let mut token_count_builder = Int64Builder::new(); // Builder for token count
-    // -- Metadata Builders --
+                                                       // -- Metadata Builders --
     let mut session_id_builder = StringBuilder::new();
     let mut source_builder = StringBuilder::new();
     let mut related_keys_builder = ListBuilder::new(StringBuilder::new());
@@ -41,17 +50,18 @@ pub(crate) async fn memories_to_batch_with_embeddings(
     // Use FixedSizeListBuilder for the vector column
     let vector_dim = embedding_model.dimension();
     let _vector_field = Arc::new(Field::new("item", DataType::Float32, true));
-    let mut vector_builder = FixedSizeListBuilder::new(
-        Float32Builder::new(),
-        vector_dim as i32
-    );
+    let mut vector_builder = FixedSizeListBuilder::new(Float32Builder::new(), vector_dim as i32);
 
     // First pass: Collect all the embeddings in parallel if possible
     let mut embedding_futures = Vec::with_capacity(memories.len());
 
     for (_, mem) in &memories {
         // Call the passed embedding generation function
-        embedding_futures.push(generate_embedding_fn(&mem.value, embedding_model, mcp_host.clone()));
+        embedding_futures.push(generate_embedding_fn(
+            &mem.value,
+            embedding_model,
+            mcp_host.clone(),
+        ));
     }
 
     // Wait for all embeddings to be generated
@@ -96,7 +106,7 @@ pub(crate) async fn memories_to_batch_with_embeddings(
             }
             None => related_keys_builder.append(false), // Mark list as null
         }
-         match mem.confidence_score {
+        match mem.confidence_score {
             Some(score) => confidence_score_builder.append_value(score),
             None => confidence_score_builder.append_null(),
         }
@@ -105,7 +115,10 @@ pub(crate) async fn memories_to_batch_with_embeddings(
         let embedding = match &embeddings[i] {
             Ok(emb) => emb.clone(), // Clone here
             Err(e) => {
-                warn!("Failed to get embedding for key '{}', using zeros instead: {}", mem.key, e);
+                warn!(
+                    "Failed to get embedding for key '{}', using zeros instead: {}",
+                    mem.key, e
+                );
                 vec![0.0; vector_dim]
             }
         };
@@ -117,10 +130,14 @@ pub(crate) async fn memories_to_batch_with_embeddings(
             }
             vector_builder.append(true);
         } else {
-             warn!("Embedding dimension mismatch for key '{}': expected {}, got {}. Appending null.", mem.key, vector_dim, embedding.len());
-             vector_builder.append(false); // Append null if dimension mismatch
+            warn!(
+                "Embedding dimension mismatch for key '{}': expected {}, got {}. Appending null.",
+                mem.key,
+                vector_dim,
+                embedding.len()
+            );
+            vector_builder.append(false); // Append null if dimension mismatch
         }
-
     }
 
     let batch = RecordBatch::try_new(
@@ -176,7 +193,10 @@ pub(crate) fn batch_to_memories(batch: &RecordBatch) -> Result<Vec<Memory>> {
     // Ensure the inner type of the list is String
     let _tags_value_array_type = match tags_array.value_type() {
         DataType::Utf8 => Ok(()),
-        other => Err(anyhow!("Expected Utf8 for tags list items, found {:?}", other)),
+        other => Err(anyhow!(
+            "Expected Utf8 for tags list items, found {:?}",
+            other
+        )),
     }?;
 
     let token_count_array = batch
@@ -205,7 +225,10 @@ pub(crate) fn batch_to_memories(batch: &RecordBatch) -> Result<Vec<Memory>> {
     // Ensure the inner type of the list is String
     let _related_keys_value_array_type = match related_keys_array.value_type() {
         DataType::Utf8 => Ok(()),
-        other => Err(anyhow!("Expected Utf8 for related_keys list items, found {:?}", other)),
+        other => Err(anyhow!(
+            "Expected Utf8 for related_keys list items, found {:?}",
+            other
+        )),
     }?;
 
     let confidence_score_array = batch
@@ -214,11 +237,9 @@ pub(crate) fn batch_to_memories(batch: &RecordBatch) -> Result<Vec<Memory>> {
         .as_primitive_opt::<Float32Type>() // Use helper for Option<f32>
         .ok_or_else(|| anyhow!("Failed to cast 'confidence_score' column"))?;
 
-
     // Iterate through rows and reconstruct Memory objects
     let mut memories = Vec::with_capacity(batch.num_rows());
     for i in 0..batch.num_rows() {
-
         // Extract optional string list for tags
         let tags: Vec<String> = if tags_array.is_valid(i) {
             let tags_list = tags_array.value(i);
@@ -234,41 +255,65 @@ pub(crate) fn batch_to_memories(batch: &RecordBatch) -> Result<Vec<Memory>> {
         let related_keys: Option<Vec<String>> = if related_keys_array.is_valid(i) {
             let keys_list = related_keys_array.value(i);
             let keys_values = keys_list.as_string::<i32>();
-            Some((0..keys_values.len()) // Use Array::len()
-                .map(|j| keys_values.value(j).to_string())
-                .collect())
+            Some(
+                (0..keys_values.len()) // Use Array::len()
+                    .map(|j| keys_values.value(j).to_string())
+                    .collect(),
+            )
         } else {
             None
         };
 
         // Extract timestamp, converting i64 to u64
-        let timestamp: u64 = timestamp_array.value(i)
-            .try_into()
-            .unwrap_or_else(|_| {
-                warn!("Timestamp value {} out of range for u64 at row {}, using 0", timestamp_array.value(i), i);
-                0 // Or handle the error more robustly if needed
-            });
+        let timestamp: u64 = timestamp_array.value(i).try_into().unwrap_or_else(|_| {
+            warn!(
+                "Timestamp value {} out of range for u64 at row {}, using 0",
+                timestamp_array.value(i),
+                i
+            );
+            0 // Or handle the error more robustly if needed
+        });
 
         // Extract optional token_count, converting i64 to usize
-        let token_count: Option<usize> = if token_count_array.is_valid(i) { // Use is_valid/value
+        let token_count: Option<usize> = if token_count_array.is_valid(i) {
+            // Use is_valid/value
             token_count_array.value(i).try_into().ok()
         } else {
             None
         };
 
-
         memories.push(Memory {
-            key: if key_array.is_valid(i) { key_array.value(i).to_string() } else { Default::default() }, // Use is_valid/value
-            value: if value_array.is_valid(i) { value_array.value(i).to_string() } else { Default::default() }, // Use is_valid/value
+            key: if key_array.is_valid(i) {
+                key_array.value(i).to_string()
+            } else {
+                Default::default()
+            }, // Use is_valid/value
+            value: if value_array.is_valid(i) {
+                value_array.value(i).to_string()
+            } else {
+                Default::default()
+            }, // Use is_valid/value
             timestamp,
             tags,
             token_count,
-            session_id: if session_id_array.is_valid(i) { Some(session_id_array.value(i).to_string()) } else { None }, // Use is_valid/value
-            source: if source_array.is_valid(i) { Some(source_array.value(i).to_string()) } else { None }, // Use is_valid/value
+            session_id: if session_id_array.is_valid(i) {
+                Some(session_id_array.value(i).to_string())
+            } else {
+                None
+            }, // Use is_valid/value
+            source: if source_array.is_valid(i) {
+                Some(source_array.value(i).to_string())
+            } else {
+                None
+            }, // Use is_valid/value
             related_keys,
-            confidence_score: if confidence_score_array.is_valid(i) { Some(confidence_score_array.value(i)) } else { None }, // Use is_valid/value
+            confidence_score: if confidence_score_array.is_valid(i) {
+                Some(confidence_score_array.value(i))
+            } else {
+                None
+            }, // Use is_valid/value
         });
     }
 
     Ok(memories)
-} 
+}
