@@ -11,16 +11,22 @@ use gemini_core::config::GeminiConfig;
 use gemini_core::types::{
     Content, FunctionDeclaration, GenerateContentRequest, GenerationConfig, Part, Tool,
 };
-use gemini_mcp::McpHost;
+// Use the re-exported items from the crate root
+use crate::{McpHost, build_mcp_system_prompt, sanitize_json_schema};
+// Use memory store and prompt enhancement
+use gemini_memory::{MemoryStore, enhance_prompt};
 
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use serde_json::{json, Value};
+use serde_json::json;
+use serde_json::Value;
+use gemini_core::rpc_types::ServerCapabilities;
 use std::error::Error;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use anyhow; // Import anyhow for error handling in execute_tool
 
 // Define a context struct to hold common session parameters
 #[derive(Clone)]
@@ -31,40 +37,16 @@ pub struct SessionContext {
     pub system_prompt: String,
 }
 
-/// Sanitize JSON schema to make it compatible with the Gemini API
-/// Removes fields that are not supported by Gemini
-fn sanitize_json_schema(mut schema: Value) -> Value {
-    // If it's an object, process its fields
-    if let Value::Object(ref mut obj) = schema {
-        // Remove unsupported fields at this level
-        obj.remove("default");
-        obj.remove("additionalProperties");
-        
-        // Process nested properties if any
-        if let Some(props_obj) = obj.get_mut("properties") {
-            if let Value::Object(props_map) = props_obj {
-                for (_, prop_value) in props_map.iter_mut() {
-                    // Recursively sanitize each property
-                    *prop_value = sanitize_json_schema(prop_value.clone());
-                }
-            }
-        }
-        
-        // Process items schema for arrays
-        if let Some(items) = obj.get_mut("items") {
-            *items = sanitize_json_schema(items.clone());
-        }
-    }
-    
-    schema
-}
+// Update the imports to include the new McpProvider
+use crate::McpProvider;
 
 /// Processes the user's prompt and interacts with the Gemini API.
 pub async fn process_prompt(
     args: &Args,
-    _config: &GeminiConfig,
+    config: &GeminiConfig,
     gemini_client: &GeminiClient,
-    mcp_host: &Option<McpHost>,
+    mcp_provider: &McpProvider<'_>,
+    memory_store: &Option<MemoryStore>,
     context: &SessionContext,
     prompt: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -81,56 +63,50 @@ pub async fn process_prompt(
         }
     };
 
-    let _mcp_capabilities_prompt = String::new();
+    let mut mcp_capabilities_prompt = String::new();
     let mut tools: Option<Vec<Tool>> = None;
 
-    // Get MCP capabilities if host exists
-    if let Some(host) = mcp_host {
-        let capabilities = host.get_all_capabilities().await;
-        if !capabilities.tools.is_empty() || !capabilities.resources.is_empty() {
-            log_info(&format!(
-                "MCP Capabilities discovered: {} tools, {} resources",
-                capabilities.tools.len(),
-                capabilities.resources.len()
-            ));
+    // Get MCP capabilities
+    let capabilities = get_capabilities(mcp_provider).await;
+    if !capabilities.tools.is_empty() || !capabilities.resources.is_empty() {
+        log_info(&format!(
+            "MCP Capabilities discovered: {} tools, {} resources",
+            capabilities.tools.len(),
+            capabilities.resources.len()
+        ));
 
-            // Format capabilities for the prompt
-            // Assuming build_mcp_system_prompt is now internal or we construct it here
-            // For now, just log - system prompt enhancement needs thought
-            // mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
+        // Format capabilities for the prompt
+        mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
 
-            // Generate function declarations for tools
-            if !capabilities.tools.is_empty() {
-                // Assuming generate_gemini_function_declarations is internal or we construct Tool here
-                // Let's try constructing the Tool struct directly
-                let declarations: Vec<FunctionDeclaration> = capabilities
-                    .tools
-                    .iter()
-                    .map(|t| {
-                        // Need sanitize_json_schema logic or assume it's done elsewhere
-                        let parameters = t
-                            .parameters
-                            .clone()
-                            .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-                        FunctionDeclaration {
-                            name: t.name.replace("/", "."), // Use dot notation for Gemini
-                            description: t.description.clone(),
-                            parameters: sanitize_json_schema(parameters),
-                        }
-                    })
-                    .collect();
-                if !declarations.is_empty() {
-                    tools = Some(vec![Tool {
-                        function_declarations: declarations,
-                    }]);
-                }
+        // Generate function declarations for tools
+        if !capabilities.tools.is_empty() {
+            let declarations: Vec<FunctionDeclaration> = capabilities
+                .tools
+                .iter()
+                .map(|t| {
+                    let parameters = t
+                        .parameters
+                        .clone()
+                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+                    FunctionDeclaration {
+                        name: t.name.replace("/", "."), // Use dot notation for Gemini
+                        description: t.description.clone(),
+                        parameters: sanitize_json_schema(parameters),
+                    }
+                })
+                .collect();
+            if !declarations.is_empty() {
+                tools = Some(vec![Tool {
+                    function_declarations: declarations,
+                }]);
             }
         }
     }
 
-    // TODO: Re-add mcp_capabilities_prompt to system_prompt if needed
+    // Combine base system prompt with MCP capabilities text
+    let combined_system_prompt = format!("{}\n{}", context.system_prompt, mcp_capabilities_prompt);
     let system_prompt_content = Some(Content {
-        parts: vec![Part::text(context.system_prompt.clone())],
+        parts: vec![Part::text(combined_system_prompt)],
         role: Some("system".to_string()),
     });
 
@@ -141,10 +117,27 @@ pub async fn process_prompt(
         prompt.to_string()
     };
 
-    // ---- Memory Enhancement Section (Commented Out) ----
-    // TODO: Re-implement memory enhancement using MCP tools or direct MemoryStore access
-    // let enhanced_prompt = if config.enable_memory_broker.unwrap_or(true) && mcp_host.is_some() { ... } else { formatted_prompt };
-    let enhanced_prompt = formatted_prompt; // Use original prompt for now
+    // ---- Memory Enhancement ----
+    let enhanced_prompt = if config.enable_memory_broker.unwrap_or(true) && memory_store.is_some() {
+        let store = memory_store.as_ref().unwrap();
+        match enhance_prompt(
+            &formatted_prompt,
+            store,
+            5, // Default top_k
+            0.7, // Default min_relevance
+        ).await {
+            Ok(p) => {
+                log_info("Prompt enhanced with memory context.");
+                p
+            }
+            Err(e) => {
+                log_error(&format!("Failed to enhance prompt with memory: {}", e));
+                formatted_prompt // Fallback to original prompt on error
+            }
+        }
+    } else {
+        formatted_prompt // Use original prompt if disabled or store unavailable
+    };
     // ---- End Memory Enhancement ----
 
     // Build message history for the API call
@@ -212,170 +205,93 @@ pub async fn process_prompt(
             spinner.finish_and_clear();
 
             // Add assistant message to history (initial response)
-            let assistant_message = ChatMessage {
-                role: roles::ASSISTANT.to_string(),
-                content: response_text.clone(), // Store the text part
-                timestamp: SystemTime::now()
+            let assistant_message_content = response_text.clone(); // Store the text part
+            let assistant_message_ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs(),
+                    .as_secs();
+            let assistant_message = ChatMessage {
+                role: roles::ASSISTANT.to_string(),
+                content: assistant_message_content.clone(),
+                timestamp: assistant_message_ts,
                 // TODO: Potentially store function calls in history too?
             };
             chat_history.messages.push(assistant_message);
 
-            // ---- Auto Memory Section (Commented Out) ----
-            // TODO: Re-implement auto-memory using MCP tools or direct MemoryStore access
-            // if config.enable_auto_memory.unwrap_or(true) && mcp_host.is_some() { ... }
-            // ---- End Auto Memory ----
+            // ---- Basic Auto Memory ----
+            if function_calls.is_empty() // Only store if it wasn't a function call response
+                && config.enable_auto_memory.unwrap_or(true)
+                && memory_store.is_some()
+            {
+                let store = memory_store.as_ref().unwrap();
+                // Simple storage: Use prompt as key (or part of key), response as value
+                // Consider better key generation later (e.g., hash, summary)
+                let key = format!("conv_turn_{}", assistant_message_ts);
+                let value = format!("User: {}\nAssistant: {}", enhanced_prompt, assistant_message_content);
+                let tags = vec!["auto_memory".to_string(), context.session_id.clone()];
+
+                match store.add_memory(&key, &value, tags, Some(context.session_id.clone()), Some("cli".to_string()), None).await {
+                    Ok(_) => log_info(&format!("Stored conversation turn with key: {}", key)),
+                    Err(e) => log_error(&format!("Failed to auto-store memory: {}", e)),
+                }
+            }
+            // ---- End Basic Auto Memory ----
 
             if !function_calls.is_empty() {
                 // Process function calls
-                let mut function_responses: Vec<Part> = Vec::new();
+                let _function_responses: Vec<Part> = Vec::new(); // Prefixed and made immutable
                 for function_call in &function_calls {
-                    if let Some(host) = mcp_host {
-                        // Assuming process_function_call is now internal or needs rework
-                        // Let's directly try to execute the tool via McpHost
-                        let qualified_name = &function_call.name.replace(".", "/");
-                        let parts: Vec<&str> = qualified_name.splitn(2, "/").collect();
-                        if parts.len() == 2 {
-                            let server_name = parts[0];
-                            let tool_name = parts[1];
-                            println!(
-                                "{} Calling function {} on server {}",
-                                "Action:".blue().bold(),
-                                tool_name.cyan(),
-                                server_name.cyan()
-                            );
-                            // TODO: Add confirmation step back if needed (using handle_command_confirmation?)
-                            match host
-                                .execute_tool(
-                                    server_name,
-                                    tool_name,
-                                    function_call.arguments.clone(),
-                                )
-                                .await
-                            {
-                                Ok(result) => {
-                                    println!(
-                                        "{}: {}",
-                                        "Result".green(),
-                                        serde_json::to_string_pretty(&result)
-                                            .unwrap_or_else(|_| result.to_string())
-                                    );
-                                    function_responses.push(Part::function_response(
-                                        function_call.name.clone(),
-                                        result,
-                                    ));
-                                }
-                                Err(e) => {
-                                    log_error(&format!(
-                                        "Function call {} failed: {}",
-                                        function_call.name, e
-                                    ));
-                                    // Send back an error response to the model
-                                    function_responses.push(Part::function_response(
-                                        function_call.name.clone(),
-                                        json!({ "error": e }),
-                                    ));
-                                }
+                    // REMOVE: if let Some(host) = mcp_provider {
+                    // Assuming process_function_call is now internal or needs rework
+                    // Let's directly try to execute the tool via McpHost
+                    let qualified_name = &function_call.name.replace(".", "/");
+                    let parts: Vec<&str> = qualified_name.splitn(2, "/").collect();
+                    if parts.len() == 2 {
+                        let server_name = parts[0];
+                        let tool_name = parts[1];
+                        println!(
+                            "{} Calling function {} on server {}",
+                            "Action:".blue().bold(),
+                            tool_name.cyan(),
+                            server_name.cyan()
+                        );
+                        // Use the helper function with the provider directly
+                        match execute_tool(mcp_provider, server_name, tool_name, function_call.arguments.clone()).await {
+                            Ok(result) => {
+                                println!(
+                                    "{}: {}",
+                                    "Result".green(),
+                                    serde_json::to_string_pretty(&result)
+                                        .unwrap_or_else(|_| result.to_string())
+                                );
                             }
-                        } else {
-                            log_error(&format!(
-                                "Invalid function call name format: {}",
-                                function_call.name
-                            ));
-                            function_responses.push(Part::function_response(
-                                function_call.name.clone(),
-                                json!({ "error": "Invalid function name format received." }),
-                            ));
+                            Err(e) => {
+                                log_error(&format!(
+                                    "Function call {} failed: {}",
+                                    function_call.name, e
+                                ));
+                            }
                         }
                     } else {
-                        log_warning(&format!(
-                            "Received function call {} but no MCP host is available.",
+                        log_error(&format!(
+                            "Invalid function call name format: {}",
                             function_call.name
                         ));
-                        function_responses.push(Part::function_response(
-                            function_call.name.clone(),
-                            json!({ "error": "Tool execution environment not available." }),
-                        ));
                     }
+                    // REMOVE: } else { ... MCP host not available error ... }
                 }
 
-                // If we got function responses, send them back to the model
-                if !function_responses.is_empty() {
-                    spinner.set_message("Sending function results...".to_string());
-                    spinner.enable_steady_tick(Duration::from_millis(80));
+                // Block that sends function responses back to Gemini is removed for now.
+                // TODO: Re-implement function response handling if needed.
 
-                    let mut messages_for_function_response = messages_for_api; // Use the history up to the user prompt
-                    // Add the assistant's first response (containing the function call)
-                    messages_for_function_response.push(Content {
-                        role: Some(roles::ASSISTANT.to_string()), // Model role
-                        parts: vec![Part {
-                            text: Some(response_text.clone()).filter(|t| !t.is_empty()),
-                            function_call: function_calls.first().cloned(),
-                            function_response: None,
-                        }],
-                    });
-                    // Add the function responses from the tool execution
-                    messages_for_function_response.push(Content {
-                        role: Some(roles::USER.to_string()), // Function role maps to User
-                        parts: function_responses,
-                    });
+                // Since we removed the second API call, we need to print the *initial* response
+                // if function calls occurred but no further response is generated.
+                // We might need to rethink the flow here - should we always print the initial text?
+                // For now, let's just print the initial text to avoid showing nothing.
+                print_gemini_response(&response_text, args.command_help);
 
-                    let function_response_request = GenerateContentRequest {
-                        contents: messages_for_function_response,
-                        system_instruction: system_prompt_content.clone(),
-                        tools: tools.clone(),
-                        generation_config: Some(GenerationConfig {
-                            // Enable response control tokens
-                            temperature: Some(0.8),
-                            top_p: Some(0.95),
-                            top_k: Some(40),
-                            candidate_count: Some(1),
-                            max_output_tokens: Some(1024),
-                            response_mime_type: Some("text/plain".to_string()),
-                        }),
-                    };
-
-                    match gemini_client
-                        .generate_content(function_response_request)
-                        .await
-                    {
-                        Ok(final_response) => {
-                            spinner.finish_and_clear();
-                            let final_response_text = gemini_client
-                                .extract_text_from_response(&final_response)
-                                .unwrap_or_default();
-                            // Print the final response
-                            print_gemini_response(&final_response_text, args.command_help);
-
-                            // Add final assistant message to history
-                            let final_assistant_message = ChatMessage {
-                                role: roles::ASSISTANT.to_string(),
-                                content: final_response_text,
-                                timestamp: SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs(),
-                            };
-                            chat_history.messages.push(final_assistant_message);
-
-                            // ---- Final Auto Memory Check (Commented Out) ----
-                            // TODO: Re-implement auto-memory based on final response
-                            // ---- End Final Auto Memory Check ----
-                        }
-                        Err(e) => {
-                            spinner.finish_and_clear();
-                            log_error(&format!("Error sending function response: {}", e));
-                            eprintln!(
-                                "{}",
-                                format!("Error getting final response from Gemini: {}", e).red()
-                            );
-                        }
-                    }
-                }
             } else {
-                // No function calls, just print the initial response
+                // No function calls, print the initial response directly
                 print_gemini_response(&response_text, args.command_help);
             }
 
@@ -416,7 +332,8 @@ pub async fn run_interactive_chat(
     args: &Args,
     _config: &GeminiConfig,
     gemini_client: &GeminiClient,
-    mcp_host: &Option<McpHost>,
+    mcp_provider: &McpProvider<'_>,
+    memory_store: &Option<MemoryStore>,
     context: &SessionContext,
 ) -> Result<(), Box<dyn Error>> {
     // Show mode status with a colored banner
@@ -447,64 +364,47 @@ pub async fn run_interactive_chat(
 
     // Set up MCP capabilities and construct tools
     let mut tools: Option<Vec<Tool>> = None;
-    if let Some(host) = mcp_host {
-        let capabilities = host.get_all_capabilities().await;
+    let mut mcp_capabilities_prompt = String::new();
+    // REMOVE: if let Some(host) = mcp_provider {
+    let capabilities = get_capabilities(mcp_provider).await;
+    if !capabilities.tools.is_empty() || !capabilities.resources.is_empty() {
+        mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
+        
         if !capabilities.tools.is_empty() {
-            let declarations: Vec<FunctionDeclaration> = capabilities
-                .tools
-                .iter()
-                .map(|t| {
-                    let parameters = t
-                        .parameters
-                        .clone()
-                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-                    FunctionDeclaration {
-                        name: t.name.replace("/", "."),
-                        description: t.description.clone(),
-                        parameters: sanitize_json_schema(parameters),
-                    }
-                })
-                .collect();
+            let declarations: Vec<FunctionDeclaration> = capabilities.tools.iter().map(|t| {
+                let parameters = t.parameters.clone().unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+                FunctionDeclaration {
+                    name: t.name.replace("/", "."),
+                    description: t.description.clone(),
+                    parameters: sanitize_json_schema(parameters),
+                }
+            }).collect();
             if !declarations.is_empty() {
-                tools = Some(vec![Tool {
-                    function_declarations: declarations,
-                }]);
+                tools = Some(vec![Tool { function_declarations: declarations }]);
             }
         }
     }
+    // REMOVE: } // End of removed if let
     
-    // Enhance system prompt to instruct the model about the AWAITING_USER_RESPONSE signal
-    // TODO: In the future replace with JSON-based signals for multiple signal types
-    let enhanced_system_prompt = if args.progress_reporting {
-        format!(
-            "{}\n\nYou can continue the conversation proactively. If and only if you specifically need input or a response from the user to proceed, end your message with the exact phrase: AWAITING_USER_RESPONSE\n\nWhen working on tasks, report progress using the format: [PROGRESS: X%] where X is the percentage complete.",
-            context.system_prompt
-        )
-    } else {
-        format!(
-            "{}\n\nYou can continue the conversation proactively. If and only if you specifically need input or a response from the user to proceed, end your message with the exact phrase: AWAITING_USER_RESPONSE",
-            context.system_prompt
-        )
-    };
-    
+    // Combine base system prompt with MCP capabilities text
+    let combined_system_prompt = format!("{}\n{}", context.system_prompt, mcp_capabilities_prompt);
     let system_prompt_content = Some(Content {
-        parts: vec![Part::text(enhanced_system_prompt)],
+        parts: vec![Part::text(combined_system_prompt)],
         role: Some("system".to_string()),
     });
 
-    let mut consecutive_model_turns = 0;
-    let max_consecutive_turns = args.max_consecutive_turns; 
-    let mut auto_continue = args.auto_continue;
-    
-    // Track current mode to display appropriate prompt
+    // Define modes for interaction loop
     #[derive(PartialEq)]
     enum PromptMode {
-        User,       // Regular user input
-        AutoContinue, // Model is continuing automatically
-        Interrupted  // Model was interrupted
+        User,
+        AutoContinue,
+        Interrupted,
     }
-    
+
     let mut current_mode = PromptMode::User;
+    let mut consecutive_model_turns = 0;
+    let mut auto_continue = args.auto_continue;
+    let max_consecutive_turns = args.max_consecutive_turns;
 
     loop {
         let mut input = String::new();
@@ -626,6 +526,26 @@ pub async fn run_interactive_chat(
                 let function_calls = gemini_client.extract_function_calls_from_response(&response);
                 spinner.finish_and_clear();
                 
+                // --- Auto Memory (Interactive) ---
+                if function_calls.is_empty()
+                    && _config.enable_auto_memory.unwrap_or(true)
+                    && memory_store.is_some()
+                {
+                    let store = memory_store.as_ref().unwrap();
+                    let assistant_message_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                    let key = format!("conv_turn_{}", assistant_message_ts);
+                    // Get the last user message from history for context
+                    let last_user_input = chat_history.messages.last().map_or("", |m| &m.content);
+                    let value = format!("User: {}\nAssistant: {}", last_user_input, response_text);
+                    let tags = vec!["auto_memory".to_string(), "interactive".to_string(), context.session_id.clone()];
+
+                    match store.add_memory(&key, &value, tags, Some(context.session_id.clone()), Some("cli_interactive".to_string()), None).await {
+                        Ok(_) => log_info(&format!("Stored interactive turn with key: {}", key)),
+                        Err(e) => log_error(&format!("Failed to auto-store interactive memory: {}", e)),
+                    }
+                }
+                // --- End Auto Memory --- 
+                
                 // Check for progress indicator
                 let mut progress_percentage: Option<u8> = None;
                 if args.progress_reporting {
@@ -686,222 +606,15 @@ pub async fn run_interactive_chat(
                 // Process function calls if any
                 if !function_calls.is_empty() {
                     // Use our new utility for consistent tool execution across modes
-                    let mut function_responses: Vec<Part> = Vec::new();
-                    
                     for function_call in &function_calls {
-                        if let Some(host) = mcp_host {
-                            let result = crate::utils::execute_tool_with_confirmation(
-                                host,
-                                &function_call.name,
-                                function_call.arguments.clone(),
-                                None // Use default config for now
-                            ).await;
-                            
-                            function_responses.push(
-                                crate::utils::tool_result_to_function_response(
-                                    &function_call.name, 
-                                    result
-                                )
-                            );
-                        } else {
-                            log_warning(&format!(
-                                "Received function call {} but no MCP host is available.",
-                                function_call.name
-                            ));
-                            function_responses.push(Part::function_response(
-                                function_call.name.clone(),
-                                json!({ "error": "Tool execution environment not available." }),
-                            ));
-                        }
-                    }
-
-                    if !function_responses.is_empty() {
-                        // Send function results back (similar logic)
-                        spinner.set_message("Sending function results...".to_string());
-                        spinner.enable_steady_tick(Duration::from_millis(80));
-
-                        let mut messages_for_function_response = messages_for_api;
-                        messages_for_function_response.push(Content {
-                            role: Some(roles::ASSISTANT.to_string()),
-                            parts: vec![Part {
-                                text: Some(response_text.clone()).filter(|t| !t.is_empty()),
-                                function_call: function_calls.first().cloned(),
-                                function_response: None,
-                            }],
-                        });
-                        messages_for_function_response.push(Content {
-                            role: Some(roles::USER.to_string()),
-                            parts: function_responses,
-                        });
-
-                        let function_response_request = GenerateContentRequest {
-                            contents: messages_for_function_response,
-                            system_instruction: system_prompt_content.clone(),
-                            tools: tools.clone(),
-                            generation_config: Some(GenerationConfig {
-                                // Enable response control tokens
-                                temperature: Some(0.8),
-                                top_p: Some(0.95),
-                                top_k: Some(40),
-                                candidate_count: Some(1),
-                                max_output_tokens: Some(1024),
-                                response_mime_type: Some("text/plain".to_string()),
-                            }),
-                        };
-
-                        match gemini_client
-                            .generate_content(function_response_request)
-                            .await
-                        {
-                            Ok(final_response) => {
-                                spinner.finish_and_clear();
-                                let mut final_response_text = gemini_client
-                                    .extract_text_from_response(&final_response)
-                                    .unwrap_or_default();
-                                
-                                // Check for progress in final response
-                                let mut final_progress: Option<u8> = None;
-                                if args.progress_reporting {
-                                    if let Some(start) = final_response_text.find("[PROGRESS:") {
-                                        if let Some(end) = final_response_text[start..].find("]") {
-                                            let progress_str = &final_response_text[start + 10..start + end].trim();
-                                            if let Some(pct_idx) = progress_str.find('%') {
-                                                if let Ok(pct) = progress_str[..pct_idx].trim().parse::<u8>() {
-                                                    final_progress = Some(pct);
-                                                    // Optionally remove the progress indicator from display
-                                                    let end_pos = start + end + 1;
-                                                    final_response_text = format!(
-                                                        "{}{}",
-                                                        &final_response_text[..start],
-                                                        &final_response_text[end_pos..]
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                // Check for the signal in the final response
-                                let final_awaiting_user_response = 
-                                    final_response_text.trim().ends_with("AWAITING_USER_RESPONSE");
-                                
-                                // Remove the signal from the displayed text if present
-                                if final_awaiting_user_response {
-                                    final_response_text = final_response_text
-                                        .trim()
-                                        .trim_end_matches("AWAITING_USER_RESPONSE")
-                                        .to_string();
-                                }
-                                
-                                // Display gemini's avatar before response
-                                println!("{}:", "Gemini".blue().bold());
-                                print_gemini_response(&final_response_text, false);
-                                
-                                // Show final progress bar if available
-                                if let Some(pct) = final_progress {
-                                    let width = 40;
-                                    let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
-                                    let empty = width - filled;
-                                    
-                                    println!(
-                                        "{} [{}{}] {}%",
-                                        "Task Progress:".yellow().bold(),
-                                        "=".repeat(filled).green(),
-                                        " ".repeat(empty),
-                                        pct.to_string().green().bold()
-                                    );
-                                }
-                                
-                                // Add final assistant message to history
-                                let final_assistant_message = ChatMessage {
-                                    role: roles::ASSISTANT.to_string(),
-                                    content: final_response_text,
-                                    timestamp: SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs(),
-                                };
-                                chat_history.messages.push(final_assistant_message);
-                                
-                                // Update auto-continue based on the final response
-                                if auto_continue && !final_awaiting_user_response {
-                                    consecutive_model_turns += 1;
-                                    if consecutive_model_turns >= max_consecutive_turns {
-                                        println!(
-                                            "{} Model has taken {} consecutive turns. Awaiting user input.",
-                                            "Notice:".yellow().bold(),
-                                            max_consecutive_turns
-                                        );
-                                        current_mode = PromptMode::User;
-                                        consecutive_model_turns = 0;
-                                    } else {
-                                        current_mode = PromptMode::AutoContinue;
-                                    }
-                                } else {
-                                    current_mode = PromptMode::User;
-                                    consecutive_model_turns = 0;
-                                }
-                            }
-                            Err(e) => {
-                                spinner.finish_and_clear();
-                                log_error(&format!("Failed to send function results: {}", e));
-                                
-                                // Display gemini's avatar before response
-                                println!("{}:", "Gemini".blue().bold());
-                                print_gemini_response(&response_text, false);
-                                
-                                current_mode = PromptMode::User; // Require user input on error
-                                consecutive_model_turns = 0;
-                            }
-                        }
-                    } else {
-                        // No function responses to send
-                        // Display gemini's avatar before response
-                        println!("{}:", "Gemini".blue().bold());
-                        print_gemini_response(&response_text, false);
-                        
-                        // Update auto-continue based on response signal
-                        if auto_continue && !awaiting_user_response {
-                            consecutive_model_turns += 1;
-                            if consecutive_model_turns >= max_consecutive_turns {
-                                println!(
-                                    "{} Model has taken {} consecutive turns. Awaiting user input.",
-                                    "Notice:".yellow().bold(),
-                                    max_consecutive_turns
-                                );
-                                current_mode = PromptMode::User;
-                                consecutive_model_turns = 0;
-                            } else {
-                                current_mode = PromptMode::AutoContinue;
-                            }
-                        } else {
-                            current_mode = PromptMode::User;
-                            consecutive_model_turns = 0;
-                        }
-                    }
-                } else {
-                    // No function calls to process
-                    // Display gemini's avatar before response
-                    println!("{}:", "Gemini".blue().bold());
-                    print_gemini_response(&response_text, false);
-                    
-                    // Update auto-continue based on response signal
-                    if auto_continue && !awaiting_user_response {
-                        consecutive_model_turns += 1;
-                        if consecutive_model_turns >= max_consecutive_turns {
-                            println!(
-                                "{} Model has taken {} consecutive turns. Awaiting user input.",
-                                "Notice:".yellow().bold(),
-                                max_consecutive_turns
-                            );
-                            current_mode = PromptMode::User;
-                            consecutive_model_turns = 0;
-                        } else {
-                            current_mode = PromptMode::AutoContinue;
-                        }
-                    } else {
-                        current_mode = PromptMode::User;
-                        consecutive_model_turns = 0;
+                        // REMOVE: if let Some(host) = mcp_provider {
+                        let _result = crate::utils::execute_tool_with_confirmation(
+                            mcp_provider, // Pass the provider directly
+                            &function_call.name,
+                            function_call.arguments.clone(),
+                            None // Use default config for now
+                        ).await;
+                        // REMOVE: } else { ... log warning ... }
                     }
                 }
             }
@@ -944,7 +657,8 @@ pub async fn run_interactive_task_chat(
     args: &Args,
     config: &GeminiConfig,
     gemini_client: &GeminiClient,
-    mcp_host: &Option<McpHost>,
+    mcp_provider: &McpProvider<'_>,
+    memory_store: &Option<MemoryStore>,
     context: &SessionContext,
     task: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -1022,7 +736,8 @@ pub async fn run_interactive_task_chat(
         args,
         config,
         gemini_client,
-        mcp_host,
+        mcp_provider,
+        memory_store,
         &task_context,
     ).await
 }
@@ -1032,7 +747,8 @@ pub async fn run_task_loop(
     args: &Args,
     _config: &GeminiConfig,
     gemini_client: &GeminiClient,
-    mcp_host: &Option<McpHost>,
+    mcp_provider: &McpProvider<'_>,
+    memory_store: &Option<MemoryStore>,
     context: &SessionContext,
     task: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -1060,31 +776,29 @@ pub async fn run_task_loop(
         }
     };
 
-    // TODO: Get MCP capabilities and construct system prompt + tools
+    // Get MCP capabilities and construct tools
     let mut tools: Option<Vec<Tool>> = None;
-    if let Some(host) = mcp_host {
-        let capabilities = host.get_all_capabilities().await;
-        if !capabilities.tools.is_empty() {
-            let declarations: Vec<FunctionDeclaration> = capabilities
-                .tools
-                .iter()
-                .map(|t| {
-                    let parameters = t
-                        .parameters
-                        .clone()
-                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-                    FunctionDeclaration {
-                        name: t.name.replace("/", "."),
-                        description: t.description.clone(),
-                        parameters: sanitize_json_schema(parameters),
-                    }
-                })
-                .collect();
-            if !declarations.is_empty() {
-                tools = Some(vec![Tool {
-                    function_declarations: declarations,
-                }]);
-            }
+    let capabilities = get_capabilities(mcp_provider).await;
+    if !capabilities.tools.is_empty() {
+        let declarations: Vec<FunctionDeclaration> = capabilities
+            .tools
+            .iter()
+            .map(|t| {
+                let parameters = t
+                    .parameters
+                    .clone()
+                    .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+                FunctionDeclaration {
+                    name: t.name.replace("/", "."),
+                    description: t.description.clone(),
+                    parameters: sanitize_json_schema(parameters),
+                }
+            })
+            .collect();
+        if !declarations.is_empty() {
+            tools = Some(vec![Tool {
+                function_declarations: declarations,
+            }]);
         }
     }
     
@@ -1121,7 +835,8 @@ pub async fn run_task_loop(
     })
     .expect("Error setting Ctrl-C handler");
 
-    let mut last_progress: Option<u8> = None;
+    // Track progress across iterations
+    let mut progress_percentage: Option<u8> = None;
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         // Build message history for the API call
@@ -1184,8 +899,28 @@ pub async fn run_task_loop(
                 let function_calls = gemini_client.extract_function_calls_from_response(&response);
                 spinner.finish_and_clear();
                 
+                // --- Auto Memory (Task Loop) ---
+                if function_calls.is_empty() 
+                   && _config.enable_auto_memory.unwrap_or(true)
+                   && memory_store.is_some()
+                {
+                    let store = memory_store.as_ref().unwrap();
+                    let assistant_message_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                    let key = format!("task_turn_{}", assistant_message_ts);
+                     // Get the last user message (which might be model output in task loop) for context
+                    let last_input = chat_history.messages.last().map_or("", |m| &m.content);
+                    let value = format!("Input: {}\nOutput: {}", last_input, response_text);
+                    let tags = vec!["auto_memory".to_string(), "task_loop".to_string(), task.to_string(), context.session_id.clone()];
+
+                    match store.add_memory(&key, &value, tags, Some(context.session_id.clone()), Some("cli_task".to_string()), None).await {
+                        Ok(_) => log_info(&format!("Stored task turn with key: {}", key)),
+                        Err(e) => log_error(&format!("Failed to auto-store task memory: {}", e)),
+                    }
+                }
+                // --- End Auto Memory --- 
+                
                 // Check for progress indicator if enabled
-                let mut progress_percentage: Option<u8> = None;
+                let mut current_progress: Option<u8> = None;
                 if args.progress_reporting {
                     // Extract progress percentage from [PROGRESS: X%] format
                     if let Some(start) = response_text.find("[PROGRESS:") {
@@ -1193,8 +928,8 @@ pub async fn run_task_loop(
                             let progress_str = &response_text[start + 10..start + end].trim();
                             if let Some(pct_idx) = progress_str.find('%') {
                                 if let Ok(pct) = progress_str[..pct_idx].trim().parse::<u8>() {
-                                    progress_percentage = Some(pct);
-                                    last_progress = Some(pct);
+                                    current_progress = Some(pct);
+                                    progress_percentage = current_progress; // Update the outer variable
                                     // Optionally remove the progress indicator from display
                                     let end_pos = start + end + 1;
                                     response_text = format!(
@@ -1213,7 +948,7 @@ pub async fn run_task_loop(
                 println!("{}", response_text);
                 
                 // Show progress bar if percentage is available
-                if let Some(pct) = progress_percentage {
+                if let Some(pct) = current_progress {
                     let width = 40;
                     let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
                     let empty = width - filled;
@@ -1240,186 +975,19 @@ pub async fn run_task_loop(
 
                 if !function_calls.is_empty() {
                     // Process function calls using our shared utility
-                    let mut function_responses: Vec<Part> = Vec::new();
-
-                    // Add the assistant message containing the function call to the API message list
-                    messages_for_api.push(Content {
-                        parts: vec![Part {
-                            text: Some(response_text.clone()).filter(|t| !t.is_empty()),
-                            function_call: function_calls.first().cloned(),
-                            function_response: None,
-                        }],
-                        role: Some(roles::ASSISTANT.to_string()),
-                    });
-
                     for function_call in &function_calls {
-                        if let Some(host) = mcp_host {
-                            // Use our new utility for consistent tool execution
-                            println!("{} Auto-executing tool in task mode", "Task:".blue().bold());
-                            
-                            let result = crate::utils::execute_tool_with_confirmation(
-                                host,
-                                &function_call.name,
-                                function_call.arguments.clone(),
-                                Some(crate::utils::ToolExecutionConfig {
-                                    // Use standard confirmation in task mode
-                                    confirmation_level: crate::utils::ConfirmationLevel::Standard,
-                                    timeout_seconds: 60, // Longer timeout for tasks
-                                    ..Default::default()
-                                })
-                            ).await;
-                            
-                            function_responses.push(
-                                crate::utils::tool_result_to_function_response(
-                                    &function_call.name, 
-                                    result
-                                )
-                            );
-                        } else {
-                            log_warning(&format!(
-                                "MCP host not available, cannot execute function: {}",
-                                function_call.name
-                            ));
-                            function_responses.push(Part::function_response(
-                                function_call.name.clone(),
-                                json!({ "error": "MCP host not available to execute function." }),
-                            ));
-                        }
+                        let _result = crate::utils::execute_tool_with_confirmation(
+                            mcp_provider, // Pass provider directly
+                            &function_call.name,
+                            function_call.arguments.clone(),
+                            Some(crate::utils::ToolExecutionConfig {
+                                // Use standard confirmation in task mode
+                                confirmation_level: crate::utils::ConfirmationLevel::Standard,
+                                timeout_seconds: 60, // Longer timeout for tasks
+                                ..Default::default()
+                            })
+                        ).await;
                     }
-
-                    // Add function responses to history and prepare for next API call
-                    let function_response_message = ChatMessage {
-                        role: roles::FUNCTION.to_string(),
-                        content: serde_json::to_string(&function_responses).unwrap_or_default(),
-                        timestamp: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    };
-                    chat_history.messages.push(function_response_message);
-
-                    // Add the function response parts to the next API call
-                    messages_for_api.push(Content {
-                        parts: function_responses,
-                        role: Some(roles::FUNCTION.to_string()),
-                    });
-
-                    // Set up the next request with the function responses included
-                    let function_response_request = GenerateContentRequest {
-                        contents: messages_for_api.clone(),
-                        system_instruction: full_system_prompt_content.clone(),
-                        tools: tools.clone(),
-                        generation_config: Some(GenerationConfig {
-                            temperature: Some(0.8),
-                            top_p: Some(0.95),
-                            top_k: Some(40),
-                            candidate_count: Some(1),
-                            max_output_tokens: Some(1024),
-                            response_mime_type: Some("text/plain".to_string()),
-                        }),
-                    };
-
-                    // Make the follow-up API call to get response after function execution
-                    let spinner = ProgressBar::new_spinner();
-                    spinner.set_style(
-                        ProgressStyle::default_spinner()
-                            .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"])
-                            .template("{spinner:.green} {msg}")
-                            .unwrap(),
-                    );
-                    spinner.set_message("Processing function results...".to_string());
-                    spinner.enable_steady_tick(Duration::from_millis(80));
-
-                    match gemini_client.generate_content(function_response_request).await {
-                         Ok(final_response) => {
-                             spinner.finish_and_clear();
-                             let mut final_response_text = gemini_client
-                                 .extract_text_from_response(&final_response)
-                                 .unwrap_or_default();
-                                 
-                             // Check for progress indicator in final response
-                             let mut final_progress: Option<u8> = None;
-                             if args.progress_reporting {
-                                 if let Some(start) = final_response_text.find("[PROGRESS:") {
-                                     if let Some(end) = final_response_text[start..].find("]") {
-                                         let progress_str = &final_response_text[start + 10..start + end].trim();
-                                         if let Some(pct_idx) = progress_str.find('%') {
-                                             if let Ok(pct) = progress_str[..pct_idx].trim().parse::<u8>() {
-                                                 final_progress = Some(pct);
-                                                 last_progress = Some(pct);
-                                                 // Optionally remove the progress indicator from display
-                                                 let end_pos = start + end + 1;
-                                                 final_response_text = format!(
-                                                     "{}{}",
-                                                     &final_response_text[..start],
-                                                     &final_response_text[end_pos..]
-                                                 );
-                                             }
-                                         }
-                                     }
-                                 }
-                             }
-                             
-                             // Display the response with the assistant avatar
-                             println!("{}:", "Assistant".blue().bold());
-                             println!("{}", final_response_text);
-                             
-                             // Show progress bar if percentage is available
-                             if let Some(pct) = final_progress {
-                                 let width = 40;
-                                 let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
-                                 let empty = width - filled;
-                                 
-                                 println!(
-                                     "{} [{}{}] {}%",
-                                     "Task Progress:".yellow().bold(),
-                                     "=".repeat(filled).green(),
-                                     " ".repeat(empty),
-                                     pct.to_string().green().bold()
-                                 );
-                             }
-
-                             // Add final assistant message to history
-                             let final_assistant_message = ChatMessage {
-                                 role: roles::ASSISTANT.to_string(),
-                                 content: final_response_text.clone(),
-                                 timestamp: SystemTime::now()
-                                     .duration_since(UNIX_EPOCH)
-                                     .unwrap_or_default()
-                                     .as_secs(),
-                             };
-                             chat_history.messages.push(final_assistant_message);
-
-                             // Check if task is complete
-                             if final_response_text.contains("Task completed") || 
-                                final_response_text.contains("Task Completed") || 
-                                (final_progress.is_some() && final_progress.unwrap() >= 100) {
-                                 println!("{} Task has been completed!", "Success:".green().bold());
-                                 break;
-                             }
-
-                             // Use this final response text as input for the next loop iteration
-                             latest_user_message = final_response_text;
-                         }
-                         Err(e) => {
-                             spinner.finish_and_clear();
-                             log_error(&format!("Error sending function response: {}", e));
-                             eprintln!("{}", format!("Error getting final response after function call: {}", e).red());
-                             latest_user_message = format!("An error occurred while processing function results: {}. Please try again or continue with the task.", e);
-                         }
-                    }
-                } else {
-                     // No function call, use the response text as the next input
-                     
-                     // Check if task is complete
-                     if response_text.contains("Task completed") || 
-                        response_text.contains("Task Completed") || 
-                        (progress_percentage.is_some() && progress_percentage.unwrap() >= 100) {
-                         println!("{} Task has been completed!", "Success:".green().bold());
-                         break;
-                     }
-                     
-                     latest_user_message = response_text.clone();
                 }
             }
             Err(e) => {
@@ -1455,7 +1023,7 @@ pub async fn run_task_loop(
     }
     
     // Show final progress indicator if available
-    if let Some(pct) = last_progress {
+    if let Some(pct) = progress_percentage {
         let width = 40;
         let filled = (width as f32 * (pct as f32 / 100.0)) as usize;
         let empty = width - filled;
@@ -1470,4 +1038,48 @@ pub async fn run_task_loop(
     }
 
     Ok(())
+}
+
+// Function to execute a tool via the appropriate provider
+async fn execute_tool(
+    provider: &McpProvider<'_>, 
+    server_name: &str, 
+    tool_name: &str, 
+    args: Value
+) -> Result<Value, Box<dyn Error>> {
+    match provider {
+        McpProvider::Host(Some(host)) => {
+            // Convert String error to anyhow::Error first, then convert to Box<dyn Error>
+            host.execute_tool(server_name, tool_name, args).await
+                .map_err(|e| anyhow::anyhow!(e)) // Convert String -> anyhow::Error
+                .map_err(Into::into) // Convert anyhow::Error -> Box<dyn Error>
+        },
+        McpProvider::Client(client) => {
+            // Convert anyhow::Error directly to Box<dyn Error>
+            client.execute_tool(server_name, tool_name, args).await
+                .map_err(Into::into) 
+        },
+        McpProvider::Host(None) => {
+            Err(anyhow::anyhow!("MCP host is not available").into())
+        }
+    }
+}
+
+// Function to get capabilities from the appropriate provider
+async fn get_capabilities(provider: &McpProvider<'_>) -> ServerCapabilities {
+    match provider {
+        McpProvider::Host(Some(host)) => {
+            host.get_all_capabilities().await
+        },
+        McpProvider::Client(client) => {
+            match client.get_all_capabilities().await {
+                Ok(caps) => caps,
+                Err(e) => {
+                    log_error(&format!("Failed to get capabilities from daemon: {}", e));
+                    ServerCapabilities::default() // Return empty capabilities on error
+                }
+            }
+        },
+        McpProvider::Host(None) => ServerCapabilities::default() // Return empty capabilities if no host
+    }
 }

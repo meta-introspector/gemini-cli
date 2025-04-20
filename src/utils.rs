@@ -1,8 +1,8 @@
 // Utility functions for the CLI
 
-use crate::logging::{log_error, log_warning};
+use crate::logging::log_error;
 use colored::*;
-use gemini_mcp::McpHost;
+use crate::McpProvider;
 use serde_json::{json, Value};
 use std::io::{self, Write};
 use tokio::time::{timeout, Duration};
@@ -15,11 +15,11 @@ pub enum ToolExecutionResult {
     Cancelled,
 }
 
-// Confirmation levels for tool execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmationLevel {
-    None,      // No confirmation needed
-    Standard,  // Regular confirmation (y/n/a)
-    Strict,    // Always require confirmation (y/n only, no "always" option)
+    None,    // No confirmation needed
+    Standard, // Regular confirmation (y/n/a)
+    Strict,  // Stricter confirmation (y/n only)
 }
 
 // Configuration for tool execution
@@ -44,7 +44,7 @@ impl Default for ToolExecutionConfig {
 
 /// Executes a tool with the appropriate confirmation logic and error handling
 pub async fn execute_tool_with_confirmation(
-    host: &McpHost,
+    provider: &McpProvider<'_>,
     function_name: &str,
     arguments: Value,
     config: Option<ToolExecutionConfig>,
@@ -121,36 +121,75 @@ pub async fn execute_tool_with_confirmation(
             server_name.cyan()
         );
         
-        // Execute with timeout
-        match timeout(
-            Duration::from_secs(config.timeout_seconds),
-            host.execute_tool(server_name, tool_name, arguments.clone())
-        ).await {
-            Ok(result) => {
-                match result {
+        // Match on the provider and handle timeout/execution within each arm
+        match provider {
+            McpProvider::Host(Some(host)) => {
+                match timeout(
+                    Duration::from_secs(config.timeout_seconds),
+                    host.execute_tool(server_name, tool_name, arguments.clone())
+                ).await {
                     Ok(result) => {
-                        println!(
-                            "{}: {}",
-                            "Result".green(),
-                            serde_json::to_string_pretty(&result)
-                                .unwrap_or_else(|_| result.to_string())
-                        );
-                        ToolExecutionResult::Success(result)
+                        match result {
+                            Ok(result_value) => {
+                                println!(
+                                    "{}: {}",
+                                    "Result".green(),
+                                    serde_json::to_string_pretty(&result_value).unwrap_or_else(|_| result_value.to_string())
+                                );
+                                ToolExecutionResult::Success(result_value)
+                            }
+                            Err(e) => {
+                                let error_msg = format!("Function call {} failed: {}", function_name, e);
+                                log_error(&error_msg);
+                                ToolExecutionResult::Failure(error_msg)
+                            }
+                        }
                     }
-                    Err(e) => {
-                        let error_msg = format!("Function call {} failed: {}", function_name, e);
-                        log_error(&error_msg);
-                        ToolExecutionResult::Failure(error_msg)
+                    Err(_) => {
+                        let timeout_msg = format!(
+                            "Function call {} timed out after {} seconds",
+                            function_name, config.timeout_seconds
+                        );
+                        log_error(&timeout_msg);
+                        ToolExecutionResult::Timeout
+                    }
+                }
+            },
+            McpProvider::Client(client) => {
+                 match timeout(
+                    Duration::from_secs(config.timeout_seconds),
+                    client.execute_tool(server_name, tool_name, arguments.clone())
+                ).await {
+                    Ok(result) => {
+                        match result {
+                            Ok(result_value) => {
+                                println!(
+                                    "{}: {}",
+                                    "Result".green(),
+                                    serde_json::to_string_pretty(&result_value).unwrap_or_else(|_| result_value.to_string())
+                                );
+                                ToolExecutionResult::Success(result_value)
+                            }
+                            Err(e) => {
+                                let error_msg = format!("Function call {} failed: {}", function_name, e);
+                                log_error(&error_msg);
+                                ToolExecutionResult::Failure(error_msg)
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        let timeout_msg = format!(
+                            "Function call {} timed out after {} seconds",
+                            function_name, config.timeout_seconds
+                        );
+                        log_error(&timeout_msg);
+                        ToolExecutionResult::Timeout
                     }
                 }
             }
-            Err(_) => {
-                let timeout_msg = format!(
-                    "Function call {} timed out after {} seconds",
-                    function_name, config.timeout_seconds
-                );
-                log_error(&timeout_msg);
-                ToolExecutionResult::Timeout
+            McpProvider::Host(None) => {
+                // If host is None, immediately return failure
+                ToolExecutionResult::Failure("MCP host is not available".to_string())
             }
         }
     } else {
