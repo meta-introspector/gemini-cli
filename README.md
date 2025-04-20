@@ -1,6 +1,6 @@
 # Gemini Rust Suite 🦀
 
-This project provides a suite of Rust crates for interacting with Google Gemini models, enabling advanced features like tool usage via the Model Capability Protocol (MCP), persistent semantic memory, and a powerful command-line interface (CLI) for Linux terminals.
+This project provides a suite of Rust crates for interacting with Google Gemini models, enabling advanced features like tool usage via the Model Context Protocol (MCP), persistent semantic memory, and a powerful command-line interface (CLI) for Linux terminals.
 
 ## ✨ Table of Contents
 
@@ -58,7 +58,7 @@ The Gemini Rust Suite is a modular project composed of several crates within a C
 This suite provides a comprehensive set of features through its components:
 
 *   **Core API Access**: Robust, async communication with the Gemini API.
-*   **Tool Usage (MCP)**: Extend Gemini's capabilities by connecting it to external tools and services via the Model Capability Protocol.
+*   **Tool Usage (MCP)**: Extend Gemini's capabilities by connecting it to external tools and services via the Model Context Protocol.
 *   **Persistent Memory**: Equip Gemini with long-term memory using a semantic vector database (LanceDB), enabling context retrieval across sessions.
 *   **Automatic Prompt Enhancement**: Automatically inject relevant memories into prompts.
 *   **Auto-Memory Storage**: Automatically capture key information from conversations into the memory store.
