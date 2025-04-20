@@ -85,25 +85,34 @@ The primary way to use the suite is through the `gemini-cli` application. The ea
 # cd gemini-rust-suite
 
 # Run the installation script from the project root
-./install.sh 
-# (Note: The install script path might need adjustment based on your clone location)
+./install.sh
 ```
 
 The script will:
 1. Check if Rust is installed.
-2. Build the release binary (`gemini-cli-bin`).
-3. Install the binary to `~/.local/bin/gemini-cli-bin`.
-4. **Add a wrapper function named `gemini`** to your `~/.bashrc` or `~/.zshrc`. This wrapper is crucial for managing session history across separate commands.
-5. Prompt you to reload your shell configuration (e.g., `source ~/.zshrc`).
+2. Check if the installation directory (`~/.local/bin`) exists and create it if necessary.
+3. Build the release binaries (`gemini-cli-bin` and `mcp-hostd`).
+4. Install the binaries to `~/.local/bin/`.
+5. Attempt to install MCP server wrapper scripts (e.g., for built-in servers) using `install_mcp_servers.sh` if found.
+6. **Add a wrapper function named `gemini`** to your `~/.bashrc` or `~/.zshrc` (if detected). This wrapper is crucial for managing session history across separate commands.
+7. **(Zsh only)** Add a helper function named `mcpd` to manage the `mcp-hostd` daemon (`mcpd start`, `mcpd stop`, `mcpd status`, `mcpd logs`).
+8. Prompt you to reload your shell configuration (e.g., `source ~/.zshrc`).
 
-**Important:** You *must* reload your shell configuration after installation for the `gemini` command (the wrapper function) to become available. 🔄
+**Important:** You *must* reload your shell configuration after installation for the `gemini` command (and `mcpd` for Zsh users) to become available. 🔄
 
 ### Manual Installation (If not using Bash/Zsh or prefer manual setup) 🔧
 
-1. Build the CLI binary: `cargo build --release --package gemini-cli`
-2. Copy the binary: `cp target/release/gemini-cli-bin ~/.local/bin/gemini-cli-bin` (or a location in your PATH).
-3. Ensure the chosen location is in your PATH.
-4. **Crucially**, manually add the wrapper function (shown below) to your shell config file (`.bashrc`, `.zshrc`, etc.) to enable session history across commands. Without the wrapper, history will only persist within a single interactive (`-i`) session.
+1. Build the required binaries:
+   ```bash
+   cargo build --release --bin gemini-cli-bin --bin mcp-hostd
+   ```
+2. Copy the binaries to a location in your PATH:
+   ```bash
+   cp target/release/gemini-cli-bin ~/.local/bin/
+   cp target/release/mcp-hostd ~/.local/bin/
+   ```
+3. Ensure the chosen location (e.g., `~/.local/bin`) is in your PATH.
+4. **Crucially**, manually add the `gemini` wrapper function (found within the `install.sh` script or the section below) to your shell config file (`.bashrc`, `.zshrc`, etc.) to enable session history across commands. Without the wrapper, history will only persist within a single interactive (`-i`) session.
    ```bash
    # Gemini CLI Wrapper Function Start
    # This function wraps the gemini-cli-bin to manage session environment variables
@@ -190,17 +199,13 @@ Use the `gemini` wrapper command (after installation and shell reload).
 gemini "Explain Rust's ownership model."
 
 # Interactive chat mode (maintains history within the session)
-gemini -i 
+gemini -i
 # Type '/exit' or press Ctrl+C to quit
 
 # Using the wrapper for history across commands:
-# First command:
+# First command (creates a session ID):
 gemini "What is the capital of France?"
-# The output might include: 
-# # export GEMINI_SESSION_ID="some_id_123"
-# Run the export command in your shell:
-# export GEMINI_SESSION_ID="some_id_123"
-# Subsequent command uses the history:
+# Subsequent command uses the history (if shell reloaded/wrapper sourced):
 gemini "What language do they speak there?"
 
 # Start a new conversation thread (gets a new session ID)
@@ -220,6 +225,12 @@ gemini --show-config
 
 # Get help on all flags
 gemini --help
+
+# Manage the MCP Host Daemon (Zsh only, via install.sh helper function)
+mcpd start
+mcpd status
+mcpd stop
+mcpd logs
 ```
 
 ### Interaction Modes
@@ -260,6 +271,7 @@ Powered by `gemini-mcp`.
     *   `gemini --command-mcp`
     *   `gemini --memory-store-mcp` (Provides embedding and storage for the Memory features)
     (These flags run the server exclusively; they don't accept prompts.)
+*   **Daemon Management:** The `mcp-hostd` binary is the standalone daemon. You can manage it directly (e.g., `mcp-hostd &`) or use the `mcpd` helper function added by `install.sh` for Zsh users (`mcpd start`, `mcpd stop`, `mcpd status`, `mcpd logs`).
 
 ## 💻 Development
 
@@ -289,4 +301,7 @@ cargo test
 
 # Run tests for a specific crate
 cargo test --package gemini-core
+
+# Run the MCP Host Daemon directly
+cargo run --package gemini-mcp --bin mcp-hostd
 ``` 
