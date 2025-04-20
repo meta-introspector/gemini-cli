@@ -1,0 +1,15 @@
+#!/bin/bash
+# This is a wrapper script for the filesystem MCP server
+# It forwards calls to the gemini-cli-bin binary
+
+# Path to the main binary (Resolved during install script run)
+GEMINI_CLI="/home/james/.local/bin/gemini-cli-bin"
+
+# Check if the binary exists
+if [ ! -x "" ]; then
+    echo "Error: gemini-cli-bin not found at " >&2
+    exit 1
+fi
+
+# Forward all input to the binary with the --filesystem-mcp flag
+exec "" --filesystem-mcp "gemini-cli-bin"

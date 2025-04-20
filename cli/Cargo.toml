@@ -1,0 +1,53 @@
+[package]
+name = "gemini-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+dotenv = "0.15"
+confy = "0.6"
+dirs = "5.0"
+base64 = "0.21"
+colored = "2.1.0"
+indicatif = "0.17"
+pulldown-cmark = "0.9"
+syntect = "5.1"
+dialoguer = "0.11"
+toml = "0.8.8"
+log = "0.4"
+env_logger = "0.11"
+uuid = { version = "1.6", features = ["v4"] }
+futures = "0.3"
+lazy_static = "1.4"
+ctrlc = "3.4.6"
+diffy = "0.3"
+futures-util = "0.3.31"
+async-trait = "0.1"
+anyhow = "1.0"
+# Add path dependencies to the new libraries
+gemini-core = { path = "../core" }
+gemini-mcp = { path = "../mcp" }
+gemini-memory = { path = "../memory" }
+
+[[bin]]
+name = "gemini-cli-bin"
+path = "src/main.rs"
+
+# The memory MCP server is used as a module, not as a separate binary
+
+# Add similar entries for filesystem and command servers if they were compiled separately
+# [[bin]]
+# name = "filesystem-mcp"
+# path = "src/mcp/servers/filesystem/main.rs"
+# 
+# [[bin]]
+# name = "command-mcp"
+# path = "src/mcp/servers/command/main.rs"
+
+[dev-dependencies]
+tempfile = "3.19.1"

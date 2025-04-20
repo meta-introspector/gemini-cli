@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""
+E5 Embedding Model MCP Server
+
+This server provides embeddings using the E5 models from sentence-transformers.
+It communicates via JSON-RPC over stdin/stdout for integration with Gemini CLI.
+"""
+
+import json
+import logging
+import sys
+import os
+import re
+from enum import Enum
+from typing import Dict, List, Optional, Union, Any
+
+import numpy as np
+import torch
+from pydantic import BaseModel, Field
+from sentence_transformers import SentenceTransformer
+from jsonrpcserver import method, Result, Success, Error, dispatch
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.FileHandler("mcp_embedding.log"), logging.StreamHandler(sys.stderr)]
+)
+logger = logging.getLogger(__name__)
+
+# Disable sentence-transformers progress bars in non-interactive mode
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+
+class ModelVariant(str, Enum):
+    """Available E5 model variants."""
+    SMALL = "small"
+    BASE = "base"
+    LARGE = "large"
+
+
+# Global variables
+model = None
+model_variant = None
+model_dimension = {
+    "small": 384,
+    "base": 768,
+    "large": 1024
+}
+
+
+class InitializeRequest(BaseModel):
+    """Request to initialize the server."""
+    variant: ModelVariant = Field(default=ModelVariant.BASE, description="Model variant to use")
+    clientInfo: Dict[str, str] = Field(default_factory=dict, description="Client information")
+
+
+class EmbedRequest(BaseModel):
+    """Request to generate embeddings."""
+    text: str = Field(..., description="Text to embed")
+    is_query: bool = Field(default=False, description="Whether this is a query (vs passage)")
+    variant: Optional[ModelVariant] = Field(
+        default=None, description="Optional override for model variant"
+    )
+
+
+@method
+def initialize(params: Dict[str, Any]) -> Result:
+    """Initialize the embedding model, responding immediately while loading the model in the background."""
+    global model, model_variant
+    
+    # Parse request using Pydantic
+    try:
+        request = InitializeRequest(**params)
+    except Exception as e:
+        logger.error(f"Invalid initialization parameters: {e}")
+        return Error(code=400, message=f"Invalid parameters: {str(e)}")
+    
+    variant = request.variant
+    model_variant = variant
+    model_name = f"intfloat/multilingual-e5-{variant}"
+    
+    # Respond immediately with basic info
+    logger.info(f"Initialize request received for E5 model variant: {variant}")
+    logger.info(f"Responding immediately, will load model '{model_name}' on first use")
+    
+    return Success({
+        "status": "initialized",
+        "model": model_name,
+        "device": "UNKNOWN (will be determined on first use)",
+        "embedding_dim": model_dimension[variant],
+        "message": "Model will be loaded on first embedding request"
+    })
+
+
+@method
+def capabilities() -> Result:
+    """Return the server's capabilities."""
+    return Success({
+        "name": "embedding",
+        "capabilities": [
+            {
+                "toolName": "embedding/embed",
+                "description": "Generate embeddings from text using E5 models",
+                "parameters": {
+                    "text": "Text to embed",
+                    "is_query": "Whether this is a query (vs passage)",
+                    "variant": "Model variant (small, base, large)"
+                }
+            }
+        ]
+    })
+
+
+@method
+def embed(params: Dict[str, Any]) -> Result:
+    """Generate an embedding for the given text, loading the model if needed."""
+    global model, model_variant
+    
+    # Check if model is initialized
+    if model is None:
+        # Try to initialize with default or requested settings
+        logger.info("Model not initialized, loading now...")
+        try:
+            variant = model_variant or "base"  # Use stored variant or default to base
+            model_name = f"intfloat/multilingual-e5-{variant}"
+            
+            # Load the model - this may take some time
+            logger.info(f"Loading E5 model variant: {variant}")
+            model = SentenceTransformer(model_name)
+            
+            # Basic info about the loaded model
+            device = "GPU" if next(model.parameters()).is_cuda else "CPU"
+            logger.info(f"Model loaded successfully on {device}")
+        except Exception as e:
+            logger.error(f"Failed to initialize model: {e}")
+            return Error(code=500, message=f"Model initialization failed: {str(e)}")
+    
+    # Parse request
+    try:
+        request = EmbedRequest(**params)
+    except Exception as e:
+        logger.error(f"Invalid embed parameters: {e}")
+        return Error(code=400, message=f"Invalid parameters: {str(e)}")
+    
+    # Handle variant override that requires model reload
+    if request.variant and request.variant != model_variant:
+        logger.info(f"Switching model variant from {model_variant} to {request.variant}")
+        try:
+            model_variant = request.variant
+            model_name = f"intfloat/multilingual-e5-{model_variant}"
+            
+            # Reload the model with new variant
+            model = SentenceTransformer(model_name)
+            device = "GPU" if next(model.parameters()).is_cuda else "CPU"
+            logger.info(f"Model switched successfully to {model_variant} on {device}")
+        except Exception as e:
+            logger.error(f"Failed to switch model: {e}")
+            return Error(code=500, message=f"Model switching failed: {str(e)}")
+    
+    # Prefix the text according to E5 requirements
+    if request.is_query:
+        prefixed_text = f"query: {request.text}"
+    else:
+        prefixed_text = f"passage: {request.text}"
+    
+    try:
+        # Generate the embedding
+        with torch.no_grad():
+            embedding = model.encode(prefixed_text, normalize_embeddings=True)
+        
+        # Convert to native Python list (for JSON serialization)
+        embedding_list = embedding.tolist()
+        
+        return Success({
+            "embedding": embedding_list,
+            "dimension": len(embedding_list)
+        })
+    except Exception as e:
+        logger.error(f"Embedding generation failed: {e}")
+        return Error(code=500, message=f"Embedding generation failed: {str(e)}")
+
+
+def handle_jsonrpc():
+    """Handle JSON-RPC requests from stdin with Content-Length framing."""
+    logger.info("Starting JSON-RPC message handler")
+    
+    while True:
+        try:
+            # Read headers until empty line
+            content_length = None
+            headers_done = False
+            
+            while not headers_done:
+                line = sys.stdin.readline()
+                if not line:  # EOF
+                    logger.info("Stdin closed (EOF). Exiting.")
+                    return
+                
+                line = line.strip()
+                if not line:  # Empty line marks end of headers
+                    headers_done = True
+                    continue
+                
+                # Parse Content-Length header
+                if line.startswith("Content-Length:"):
+                    try:
+                        # Extract only the numeric part from the header
+                        header_value = line.split(":", 1)[1].strip()
+                        # Get only digits from the header value
+                        numeric_part = ''.join(c for c in header_value if c.isdigit())
+                        content_length = int(numeric_part)
+                        logger.debug(f"Received header: Content-Length = {content_length}")
+                    except ValueError as e:
+                        logger.error(f"Invalid Content-Length format: {line} - {e}")
+            
+            # Check if we have Content-Length header
+            if content_length is None:
+                logger.error("No Content-Length header found, skipping message")
+                continue
+            
+            # Read exactly content_length bytes
+            content = ''
+            remaining = content_length
+            while remaining > 0:
+                chunk = sys.stdin.read(min(1024, remaining))
+                if not chunk:  # EOF
+                    logger.error("Unexpected EOF while reading content")
+                    return
+                content += chunk
+                remaining -= len(chunk)
+            
+            logger.debug(f"Received message: {content}")
+            
+            # Process the request
+            request = json.loads(content)
+            
+            # Special handling for initialization
+            if request.get("method") == "initialize":
+                logger.info(f"Received initialize request (id: {request.get('id')})")
+                # Immediately respond to initialization requests with expected format
+                logger.info("Sending immediate initialization response")
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "status": "initialized",
+                        "model": "E5 Embedding Model",
+                        "capabilities": {
+                            "name": "embedding",
+                            "methods": ["embed"]
+                        },
+                        "message": "Initialization successful"
+                    }
+                }
+                send_response(response)
+                continue
+            
+            # Normal method dispatch
+            response = dispatch(request)
+            send_response(response)
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON: {e}")
+            send_error_response(-32700, "Parse error", request_id=None)
+        except Exception as e:
+            logger.error(f"Error processing request: {e}")
+            send_error_response(-32603, f"Internal error: {str(e)}", request_id=None)
+
+
+def send_response(response):
+    """Send a JSON-RPC response with proper Content-Length framing."""
+    try:
+        response_json = json.dumps(response)
+        response_bytes = response_json.encode('utf-8')
+        content_length = len(response_bytes)
+        
+        # Write headers with strict \r\n format - ensure no extra content in the header
+        header = f"Content-Length: {content_length}\r\n\r\n"
+        sys.stdout.write(header)
+        sys.stdout.flush()
+        
+        # Write content
+        sys.stdout.buffer.write(response_bytes)
+        sys.stdout.flush()
+        
+        logger.debug(f"Sent response: {response_json}")
+    except Exception as e:
+        logger.error(f"Failed to send response: {e}")
+
+
+def send_error_response(code, message, request_id=None):
+    """Send error response with proper JSON-RPC format."""
+    error_response = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {
+            "code": code,
+            "message": message
+        }
+    }
+    send_response(error_response)
+
+
+if __name__ == "__main__":
+    try:
+        handle_jsonrpc()
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt, exiting gracefully.")
+    except Exception as e:
+        logger.error(f"Unhandled exception: {e}")
+        sys.exit(1)
