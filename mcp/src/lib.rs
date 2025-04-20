@@ -6,7 +6,7 @@
 pub mod config;
 pub mod gemini;
 pub mod host;
-pub mod ipc;
+// pub mod ipc; // Removed, now handled by the dedicated `ipc` crate
 pub mod rpc;
 pub mod servers;
 

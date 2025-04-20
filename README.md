@@ -31,11 +31,15 @@ The Gemini Rust Suite is a modular project composed of several crates within a C
     *   Core configuration loading (`GeminiConfig` from TOML) and error handling (`GeminiError`).
     *   Shared JSON-RPC types (`Request`, `Response`, `ServerCapabilities`, `Tool`) used by MCP.
 
+*   **`gemini-ipc`**: Centralizes Inter-Process Communication definitions:
+    *   Defines standardized Rust structs/enums for messages passed between different daemons/clients (e.g., `gemini-cli`, `mcp-hostd`, `HAPPE`, `IDA`).
+    *   Ensures consistent communication protocols (relies on `serde` for serialization).
+
 *   **`gemini-mcp`**: Implements the **host** side of the Model Context Protocol (MCP):
     *   `McpHost` manages discovering, launching (via stdio, SSE, WebSocket), and communicating with MCP **servers** (external tools/services).
     *   Handles JSON-RPC communication for tool execution (`mcp/tool/execute`) and resource retrieval.
     *   Translates between Gemini function calling and MCP tool execution.
-    *   Includes the `mcp-hostd` binary, a standalone MCP host daemon.
+    *   Includes the `mcp-hostd` binary, a standalone MCP host daemon (uses `gemini-ipc` for client communication).
     *   Provides the source for built-in MCP servers (`filesystem`, `command`, `memory_store`).
 
 *   **`gemini-memory`**: Implements a persistent, semantic memory store:
@@ -50,8 +54,19 @@ The Gemini Rust Suite is a modular project composed of several crates within a C
     *   Supports single-shot prompts, interactive chat, and task loops.
     *   Integrates MCP for tool usage and Memory for context awareness and history.
     *   Manages user configuration, chat history, and session state.
-    *   Can connect to the `mcp-hostd` daemon or run an embedded `McpHost`.
+    *   Can connect to the `mcp-hostd` daemon (via `gemini-ipc`) or run an embedded `McpHost`.
     *   Can *also* run the built-in MCP servers directly via flags (`--filesystem-mcp`, etc.).
+
+*   **(New) `HAPPE`**: Host Application Environment daemon:
+    *   Intended as the primary execution environment, replacing direct CLI usage for more complex scenarios.
+    *   Manages interactions between users/clients, the main LLM, `IDA`, and MCP servers.
+    *   Uses `gemini-ipc` to communicate with `IDA`.
+    *   Handles LLM calls and LLM-initiated MCP tool execution.
+
+*   **(New) `IDA`**: Internal Dialogue App daemon:
+    *   Manages persistent memory and other background cognitive tasks.
+    *   Communicates with `HAPPE` via `gemini-ipc`.
+    *   Interacts with the Memory MCP Server (via `gemini-mcp` client logic) for retrieval and storage.
 
 ## 🚀 Features
 

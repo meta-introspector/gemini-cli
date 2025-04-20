@@ -146,3 +146,53 @@ async fn main() -> Result<()> {
 ```
 
 **Note**: This example uses a `DummyMcpHost` for demonstration. In a real application, you would provide an actual implementation, likely obtained from initializing `gemini-mcp::McpHost`. 
+
+
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant HostApp (CLI)
+    participant MemoryBrokerDaemon
+    participant MemoryMCPServer (LanceDB wrapper)
+    participant MainLLM
+
+    User->>+HostApp: Sends Query
+    HostApp->>+MemoryBrokerDaemon: Forwards User Query
+    MemoryBrokerDaemon->>MemoryBrokerDaemon: Decide if memory query needed
+    alt Memory Query Needed
+        MemoryBrokerDaemon->>+MemoryMCPServer: Request relevant memories (tool call)
+        MemoryMCPServer->>MemoryMCPServer: Query LanceDB (using embeddings?)
+        MemoryMCPServer-->>-MemoryBrokerDaemon: Return Memories (or none)
+        alt Memories Found
+            MemoryBrokerDaemon-->>-HostApp: Return Found Memories
+            HostApp->>+MainLLM: Query + Retrieved Memories
+            MainLLM-->>-HostApp: Response
+            HostApp-->>-User: Display Response
+        else No Memories Found
+            MemoryBrokerDaemon-->>HostApp: Signal: "No Memories Found"
+            HostApp->>+MainLLM: Query + Signal: "Broker wants user asked for storable info"
+            MainLLM->>MainLLM: Evaluate relevance of asking user
+            alt Asking User is Relevant
+                MainLLM-->>-HostApp: Instruction: "Ask user for info"
+                HostApp-->>+User: Ask for more info
+                User->>+HostApp: Provides Info
+                Note right of HostApp: Info possibly sent to Broker next turn? Or used now?
+                HostApp->>+MainLLM: Follow-up / Re-query with new info?
+                MainLLM-->>-HostApp: Response
+                HostApp-->>-User: Display Response
+            else Asking User Not Relevant
+                 MainLLM-->>-HostApp: (Proceeds without asking user)
+                 HostApp->>+MainLLM: Original Query (No Memories)
+                 MainLLM-->>-HostApp: Response
+                 HostApp-->>-User: Display Response
+            end
+        end
+    else Memory Query Not Needed
+        MemoryBrokerDaemon-->>-HostApp: Indicate no query needed / No memories found
+        HostApp->>+MainLLM: Query (No Memories)
+        MainLLM-->>-HostApp: Response
+        HostApp-->>-User: Display Response
+    end
+```
+    Note over MemoryBrokerDaemon, MainLLM: Storage process needs definition.

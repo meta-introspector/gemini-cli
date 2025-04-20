@@ -33,6 +33,7 @@ anyhow = "1.0"
 gemini-core = { path = "../core" }
 gemini-mcp = { path = "../mcp" }
 gemini-memory = { path = "../memory" }
+ipc = { path = "../ipc" }
 
 [[bin]]
 name = "gemini-cli-bin"

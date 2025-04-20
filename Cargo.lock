@@ -1916,6 +1916,7 @@ dependencies = [
  "gemini-mcp",
  "gemini-memory",
  "indicatif",
+ "ipc",
  "lazy_static",
  "log",
  "pulldown-cmark",
@@ -1966,6 +1967,7 @@ dependencies = [
  "gemini-core",
  "gemini-memory",
  "hostname",
+ "ipc",
  "jsonrpc-lite",
  "log",
  "os_info",
@@ -2571,6 +2573,16 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "ipc"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gemini-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

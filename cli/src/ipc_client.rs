@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use gemini_memory::broker::{McpHostInterface, Capabilities, ToolDefinition};
 use gemini_memory::schema::EmbeddingModelVariant;
 
-// Import the daemon request/response types from gemini-mcp
-use gemini_mcp::ipc::{DaemonRequest, DaemonResponse, ResponseStatus};
+// Import the daemon request/response types from the dedicated ipc crate
+use ipc::daemon_messages::{DaemonRequest, DaemonResponse, ResponseStatus, ResponsePayload, DaemonResult};
 use gemini_core::rpc_types::{ServerCapabilities, Request, Response, JsonRpcError};
 
 /// Represents a client for connecting to the MCP Host Daemon.
@@ -60,15 +60,15 @@ impl McpDaemonClient {
                 // Extract the capabilities from the response
                 // This assumes the DaemonResponse contains a DaemonResult::Capabilities variant
                 match response.payload {
-                    gemini_mcp::ipc::ResponsePayload::Result(gemini_mcp::ipc::DaemonResult::Capabilities(caps)) => Ok(caps),
-                    gemini_mcp::ipc::ResponsePayload::Error(err) => Err(anyhow::anyhow!("Daemon returned error for capabilities: {}", err.message)),
+                    ResponsePayload::Result(DaemonResult::Capabilities(caps)) => Ok(caps),
+                    ResponsePayload::Error(err) => Err(anyhow::anyhow!("Daemon returned error for capabilities: {}", err.message)),
                     _ => Err(anyhow::anyhow!("Unexpected response payload format for capabilities")),
                 }
             }
             ResponseStatus::Error => {
                 // Extract the error message and return it
                 let error_msg = match response.payload {
-                    gemini_mcp::ipc::ResponsePayload::Error(error) => error.message,
+                    ResponsePayload::Error(error) => error.message,
                     _ => "Unknown error occurred while getting capabilities".to_string(),
                 };
                 Err(anyhow::anyhow!("Daemon error: {}", error_msg))
@@ -99,11 +99,11 @@ impl McpDaemonClient {
             ResponseStatus::Success => {
                 // Extract the execution result from the response
                 match response.payload {
-                    gemini_mcp::ipc::ResponsePayload::Result(gemini_mcp::ipc::DaemonResult::ExecutionOutput(output)) => {
+                    ResponsePayload::Result(DaemonResult::ExecutionOutput(output)) => {
                         debug!("Tool execution successful: {}.{}", server, tool);
                         Ok(output)
                     },
-                    gemini_mcp::ipc::ResponsePayload::Error(err) => {
+                    ResponsePayload::Error(err) => {
                         warn!("Daemon returned error for tool execution: {}", err.message);
                         Err(anyhow::anyhow!("Daemon returned error for tool execution: {}", err.message))
                     },
@@ -116,7 +116,7 @@ impl McpDaemonClient {
             ResponseStatus::Error => {
                 // Extract the error message and return it
                 let error_msg = match response.payload {
-                    gemini_mcp::ipc::ResponsePayload::Error(error) => error.message,
+                    ResponsePayload::Error(error) => error.message,
                     _ => "Unknown error occurred during tool execution".to_string(),
                 };
                 error!("Tool execution error for {}.{}: {}", server, tool, error_msg);
@@ -138,15 +138,15 @@ impl McpDaemonClient {
             ResponseStatus::Success => {
                 // Extract the embedding vector from the response
                 match response.payload {
-                    gemini_mcp::ipc::ResponsePayload::Result(gemini_mcp::ipc::DaemonResult::Embedding(embedding)) => Ok(embedding),
-                    gemini_mcp::ipc::ResponsePayload::Error(err) => Err(anyhow::anyhow!("Daemon returned error for embedding generation: {}", err.message)),
+                    ResponsePayload::Result(DaemonResult::Embedding(embedding)) => Ok(embedding),
+                    ResponsePayload::Error(err) => Err(anyhow::anyhow!("Daemon returned error for embedding generation: {}", err.message)),
                     _ => Err(anyhow::anyhow!("Unexpected response payload format for embedding generation")),
                 }
             }
             ResponseStatus::Error => {
                 // Extract the error message and return it
                 let error_msg = match response.payload {
-                    gemini_mcp::ipc::ResponsePayload::Error(error) => error.message,
+                    ResponsePayload::Error(error) => error.message,
                     _ => "Unknown error occurred during embedding generation".to_string(),
                 };
                 Err(anyhow::anyhow!("Embedding generation error: {}", error_msg))
@@ -163,7 +163,7 @@ impl McpDaemonClient {
             ResponseStatus::Success => {
                 // Extract the broker capabilities from the response
                 match response.payload {
-                    gemini_mcp::ipc::ResponsePayload::Result(gemini_mcp::ipc::DaemonResult::BrokerCapabilities(broker_caps)) => {
+                    ResponsePayload::Result(DaemonResult::BrokerCapabilities(broker_caps)) => {
                         // Convert from the daemon's BrokerCapabilities to gemini_memory's Capabilities
                         let tools = broker_caps.tools.iter().map(|tool| {
                             ToolDefinition {
@@ -173,14 +173,14 @@ impl McpDaemonClient {
                         
                         Ok(Capabilities { tools })
                     },
-                    gemini_mcp::ipc::ResponsePayload::Error(err) => Err(anyhow::anyhow!("Daemon returned error for broker capabilities: {}", err.message)),
+                    ResponsePayload::Error(err) => Err(anyhow::anyhow!("Daemon returned error for broker capabilities: {}", err.message)),
                     _ => Err(anyhow::anyhow!("Unexpected response payload format for broker capabilities")),
                 }
             }
             ResponseStatus::Error => {
                 // Extract the error message and return it
                 let error_msg = match response.payload {
-                    gemini_mcp::ipc::ResponsePayload::Error(error) => error.message,
+                    ResponsePayload::Error(error) => error.message,
                     _ => "Unknown error occurred while getting broker capabilities".to_string(),
                 };
                 Err(anyhow::anyhow!("Daemon error: {}", error_msg))

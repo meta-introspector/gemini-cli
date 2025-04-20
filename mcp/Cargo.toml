@@ -30,6 +30,7 @@ hostname = "0.3"
 diffy = "0.3"
 jsonrpc-lite = "0.6.0"
 env_logger = "0.10"
+ipc = { path = "../ipc" }
 
 [dev-dependencies]
 tempfile = "3.8" 

@@ -8,7 +8,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 use std::fs;
-use gemini_mcp::ipc::{DaemonRequest, DaemonResponse, DaemonResult, BrokerCapabilities, ToolDefinition};
+use ipc::daemon_messages::{DaemonRequest, DaemonResponse, DaemonResult, BrokerCapabilities, ToolDefinition};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde_json::json;
 
