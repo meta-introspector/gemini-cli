@@ -1,5 +1,5 @@
 // Use `ida::` to refer to the library crate from the binary
-use ida::{config::IdaConfig, ipc_server, memory_mcp_client, storage};
+use ida::{config::IdaConfig, ipc_server};
 use std::path::PathBuf;
 use clap::Parser;
 use tracing::{error, info};

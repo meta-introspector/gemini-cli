@@ -1,5 +1,5 @@
 use gemini_core::config::{GeminiConfig, UnifiedConfig, get_unified_config_path};
-use gemini_mcp::{McpServerConfig, McpTransport};
+use gemini_mcp::McpServerConfig;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use gemini_core::client::GeminiClient;
 use gemini_core::types::{Content, GenerateContentRequest, Part, Tool};
-use gemini_mcp::gemini::{FunctionCall, parse_function_calls};
+use gemini_mcp::gemini::FunctionCall;
 use serde_json::Value;
 use thiserror::Error;
 use tracing::{debug, error};

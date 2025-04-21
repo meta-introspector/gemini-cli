@@ -4,10 +4,9 @@ use crate::llm_client;
 use crate::mcp_client::{self, McpHostClient};
 use anyhow::{anyhow, Result};
 use gemini_core::client::GeminiClient;
-use gemini_core::types::{Content, Part, Tool};
+use gemini_core::types::{Content, Part};
 use gemini_ipc::internal_messages::{ConversationTurn, MemoryItem};
-use gemini_mcp::gemini::{build_mcp_system_prompt, parse_function_calls};
-use serde_json::Value;
+use gemini_mcp::gemini::build_mcp_system_prompt;
 use tracing::{debug, error, info, warn};
 
 /// Process a single query from the user

@@ -4,12 +4,10 @@ use gemini_core::types::{FunctionDeclaration, Tool};
 use gemini_ipc::daemon_messages::{
     DaemonRequest, DaemonResponse, DaemonResult, ResponsePayload, ResponseStatus,
 };
-use serde_json::json;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tracing::{debug, error, info};
 
 /// Client to communicate with the MCP host daemon
 #[derive(Clone)]

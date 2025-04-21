@@ -8,7 +8,6 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 /// Shared state for the IPC server

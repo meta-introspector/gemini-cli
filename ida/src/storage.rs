@@ -1,8 +1,7 @@
-use crate::memory_mcp_client;
 use gemini_ipc::internal_messages::ConversationTurn;
-use gemini_memory::{Memory, MemoryStore};
+use gemini_memory::MemoryStore;
 use std::sync::Arc;
-use tracing::{error, info, instrument, debug};
+use tracing::{info, instrument, debug};
 use anyhow::{Result, Context};
 
 /// Summarizes a conversation turn into a memory item.

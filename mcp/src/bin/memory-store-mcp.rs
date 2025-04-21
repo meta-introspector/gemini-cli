@@ -2,10 +2,8 @@ use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::error::Error;
-use std::time::UNIX_EPOCH;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::signal;
-use chrono::{DateTime, Utc};
 
 // Import memory crate
 use gemini_memory::MemoryStore;

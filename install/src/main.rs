@@ -6,7 +6,7 @@ use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Stdin, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread::sleep;
@@ -1334,7 +1334,7 @@ fn create_daemon_symlinks(install_dir: &Path, daemons: &[DaemonInfo]) -> Result<
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::symlink;
-                    use std::os::unix::fs::MetadataExt;
+                    
                     
                     // If it's already a symlink pointing to the correct target, skip
                     if let Ok(target) = fs::read_link(&symlink_path) {

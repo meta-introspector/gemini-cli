@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::env;
 use anyhow::{Result, Context, anyhow};
-use gemini_core::config::{UnifiedConfig, get_unified_config_path};
+use gemini_core::config::get_unified_config_path;
 
 /// Configuration for the IDA daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]

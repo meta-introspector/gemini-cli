@@ -3,7 +3,6 @@ use clap::{Parser, Subcommand};
 use tracing::{info, debug};
 use colored::Colorize;
 use std::env;
-use std::path::PathBuf;
 use dirs;
 
 mod daemon;

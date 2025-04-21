@@ -1,8 +1,8 @@
 use gemini_ipc::internal_messages::MemoryItem;
 use gemini_memory::{MemoryStore, Memory};
 use std::sync::Arc;
-use tracing::{info, instrument, debug, warn};
-use anyhow::{Result, Context, anyhow};
+use tracing::{info, instrument, debug};
+use anyhow::{Result, Context};
 
 /// Error type for memory operations
 #[derive(Debug, thiserror::Error)]
