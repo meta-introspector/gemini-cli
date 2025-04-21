@@ -1,26 +1,34 @@
 use crate::{memory_mcp_client, storage};
 use gemini_ipc::internal_messages::InternalMessage;
-use std::path::Path;
+use gemini_memory::MemoryStore;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, instrument, warn};
+use anyhow::Context;
 
-// TODO: Define a proper config struct
+/// Configuration for the IDA daemon
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
     pub ipc_path: String,
-    // Add other config fields like MCP server address later
+    /// Path to the memory database directory
+    pub memory_db_path: Option<PathBuf>,
+    /// Maximum number of memory results to return per query
+    pub max_memory_results: usize,
 }
 
-// TODO: Define a proper error type
+/// Error type for server operations
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    #[error("MCP client error: {0}")]
-    McpClient(#[from] crate::memory_mcp_client::McpClientError),
+    #[error("Memory error: {0}")]
+    Memory(#[from] crate::memory_mcp_client::MemoryError),
+    #[error("Anyhow error: {0}")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 #[instrument(skip(config))]
@@ -32,17 +40,38 @@ pub async fn run_server(config: DaemonConfig) -> Result<(), ServerError> {
         warn!("IPC socket file already exists, removing: {:?}", ipc_path);
         tokio::fs::remove_file(ipc_path).await?;
     }
+    
+    // Initialize the memory store
+    info!("Initializing memory store...");
+    let memory_store = Arc::new(
+        MemoryStore::new(
+            config.memory_db_path.clone(), 
+            None, // Default embedding model
+            None, // No MCP host for now
+        )
+        .await
+        .context("Failed to initialize memory store")?
+    );
+    info!("Memory store initialized successfully");
 
     let listener = UnixListener::bind(ipc_path)?;
     info!("IDA Daemon listening on IPC path: {:?}", ipc_path);
+    
+    // Create a cloneable config that includes the memory_store
+    let server_state = Arc::new(ServerState {
+        config: config.clone(),
+        memory_store: memory_store.clone(),
+    });
 
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
                 info!("Accepted new IPC connection");
+                // Clone server state for the new connection handler
+                let connection_state = server_state.clone();
                 // Spawn a task to handle this connection independently
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream).await {
+                    if let Err(e) = handle_connection(stream, connection_state).await {
                         error!("Error handling connection: {}", e);
                     }
                 });
@@ -59,14 +88,21 @@ pub async fn run_server(config: DaemonConfig) -> Result<(), ServerError> {
     // Ok(()) // Unreachable in the current loop structure
 }
 
-#[instrument(skip(stream), name = "ipc_connection_handler")]
-async fn handle_connection(mut stream: UnixStream) -> Result<(), ServerError> {
+/// Holds shared state for connection handlers
+#[derive(Debug)]
+struct ServerState {
+    config: DaemonConfig,
+    memory_store: Arc<MemoryStore>,
+}
+
+#[instrument(skip(stream, state), name = "ipc_connection_handler")]
+async fn handle_connection(mut stream: UnixStream, state: Arc<ServerState>) -> Result<(), ServerError> {
     let mut buffer = Vec::with_capacity(4096); // Start with 4KB, might need adjustment
 
     loop {
         // Read data from the stream
         buffer.clear(); // Clear buffer for new message
-                        // Simple length-prefixing: Read u32 length first
+        // Simple length-prefixing: Read u32 length first
         let length = match stream.read_u32().await {
             Ok(len) => len,
             Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -109,14 +145,30 @@ async fn handle_connection(mut stream: UnixStream) -> Result<(), ServerError> {
         match message {
             InternalMessage::GetMemoriesRequest { query } => {
                 info!("Processing GetMemoriesRequest for query: {}", query);
-                let memories = memory_mcp_client::retrieve_memories(&query).await?;
+                
+                // Use the real memory retrieval function
+                let memories = memory_mcp_client::retrieve_memories(
+                    &query, 
+                    state.memory_store.clone(),
+                    state.config.max_memory_results,
+                ).await?;
+                
                 let response = InternalMessage::GetMemoriesResponse { memories };
                 send_message(&mut stream, &response).await?;
             }
             InternalMessage::StoreTurnRequest { turn_data } => {
                 info!("Processing StoreTurnRequest, spawning background task.");
+                
+                // Clone the memory store for the background task
+                let memory_store_clone = state.memory_store.clone();
+                
                 // Spawn a background task for storage and continue handling connection
-                tokio::spawn(storage::handle_storage(turn_data));
+                tokio::spawn(async move {
+                    if let Err(e) = storage::handle_storage(turn_data, memory_store_clone).await {
+                        error!("Error in background storage task: {}", e);
+                    }
+                });
+                
                 // No response is sent for this message type
             }
             // Handle other message types if added later
@@ -131,10 +183,7 @@ async fn handle_connection(mut stream: UnixStream) -> Result<(), ServerError> {
 }
 
 // Helper function to send a message with length prefix
-async fn send_message(
-    stream: &mut UnixStream,
-    message: &InternalMessage,
-) -> Result<(), ServerError> {
+async fn send_message(stream: &mut UnixStream, message: &InternalMessage) -> Result<(), ServerError> {
     let serialized = serde_json::to_vec(message)?;
     let len = serialized.len() as u32;
 

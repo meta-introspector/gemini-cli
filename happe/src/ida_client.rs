@@ -3,15 +3,19 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::UnixStream;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
-const MAX_RETRIES: u32 = 3;
-const RETRY_DELAY: Duration = Duration::from_millis(500);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2); // Timeout for establishing connection
+// Keep retry logic for initial connection attempt within a single request cycle
+const MAX_RETRIES: u32 = 1; // Reduce retries for per-request connections
+const RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Error, Debug)]
 pub enum IdaClientError {
-    #[error("Failed to connect to IDA socket after {MAX_RETRIES} retries: {0}")]
-    ConnectionFailed(#[source] io::Error),
+    #[error("Failed to connect to IDA socket {0}: {1}")]
+    ConnectionFailed(String, #[source] io::Error),
+    #[error("Connection attempt timed out after {0:?}")]
+    ConnectionTimeout(Duration),
     #[error("IO error during communication with IDA: {0}")]
     Io(#[from] io::Error),
     #[error("Serialization error: {0}")]
@@ -25,114 +29,94 @@ type Result<T> = std::result::Result<T, IdaClientError>;
 // Alias io::Error for clarity
 use std::io;
 
-pub struct IdaClient {
-    // Use BufReader/BufWriter for potentially better performance with framed messages
-    reader: BufReader<tokio::net::unix::ReadHalf<'static>>,
-    writer: BufWriter<tokio::net::unix::WriteHalf<'static>>,
-}
+// IdaClient struct is now simplified or potentially unnecessary, keeping it for now as a namespace.
+pub struct IdaClient {}
 
 impl IdaClient {
-    pub async fn connect(socket_path: &str) -> Result<Self> {
+    // Helper function to connect with retries and timeout
+    async fn connect_with_retry(socket_path: &str) -> Result<UnixStream> {
         let mut last_error = None;
-        for attempt in 0..MAX_RETRIES {
-            match UnixStream::connect(socket_path).await {
-                Ok(stream) => {
-                    info!(
-                        attempt,
-                        "Successfully connected to IDA socket {}", socket_path
-                    );
-                    // Need to Box the halves to erase the lifetime bounds
-                    let (reader, writer) = stream.into_split();
-                    let reader_boxed = Box::new(reader);
-                    let writer_boxed = Box::new(writer);
-                    // SAFETY: This is safe because we own the stream and its halves.
-                    // We convert to static lifetimes to store them in the struct.
-                    // The struct's lifetime dictates the actual validity.
-                    let reader_static = unsafe {
-                        std::mem::transmute::<_, tokio::net::unix::ReadHalf<'static>>(reader_boxed)
-                    };
-                    let writer_static = unsafe {
-                        std::mem::transmute::<_, tokio::net::unix::WriteHalf<'static>>(writer_boxed)
-                    };
-
-                    return Ok(IdaClient {
-                        reader: BufReader::new(reader_static),
-                        writer: BufWriter::new(writer_static),
-                    });
+        for attempt in 0..=MAX_RETRIES {
+            match tokio::time::timeout(CONNECT_TIMEOUT, UnixStream::connect(socket_path)).await {
+                Ok(Ok(stream)) => {
+                    debug!("Connected to IDA socket {}", socket_path);
+                    return Ok(stream);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(
                         attempt,
                         error = %e,
-                        "Failed to connect to IDA socket {}, retrying in {:?}...",
+                        "Failed to connect to IDA socket {} (attempt {}/{}), retrying in {:?}...",
                         socket_path,
+                        attempt,
+                        MAX_RETRIES,
                         RETRY_DELAY
                     );
                     last_error = Some(e);
-                    tokio::time::sleep(RETRY_DELAY).await;
+                    if attempt < MAX_RETRIES {
+                        tokio::time::sleep(RETRY_DELAY).await;
+                    }
+                }
+                Err(_) => {
+                    // Timeout error
+                    return Err(IdaClientError::ConnectionTimeout(CONNECT_TIMEOUT));
                 }
             }
         }
-        Err(IdaClientError::ConnectionFailed(last_error.unwrap_or_else(
-            || {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    "Connection attempt failed without error",
-                )
-            },
-        )))
+        Err(IdaClientError::ConnectionFailed(
+            socket_path.to_string(),
+            last_error.unwrap_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "Connection attempt failed without specific error")
+            }),
+        ))
     }
 
-    async fn send_message(&mut self, message: &InternalMessage) -> Result<()> {
-        let serialized = serde_json::to_vec(message)?;
-        debug!(size = serialized.len(), "Sending message to IDA");
+    // Static method: Connects, sends, receives, disconnects.
+    pub async fn get_memories(socket_path: &str, query: &str) -> Result<Vec<MemoryItem>> {
+        let stream = Self::connect_with_retry(socket_path).await?;
+        let (reader, writer) = stream.into_split();
+        let mut buf_reader = BufReader::new(reader);
+        let mut buf_writer = BufWriter::new(writer);
 
-        // Prepend message length (as u32)
+        // Send request
+        let request = InternalMessage::GetMemoriesRequest { query: query.to_string() };
+        let serialized = serde_json::to_vec(&request)?;
         let len_bytes = (serialized.len() as u32).to_be_bytes();
-        self.writer.write_all(&len_bytes).await?;
-        self.writer.write_all(&serialized).await?;
-        self.writer.flush().await?;
-        Ok(())
-    }
+        buf_writer.write_all(&len_bytes).await?;
+        buf_writer.write_all(&serialized).await?;
+        buf_writer.flush().await?;
+        debug!(query, "Sent GetMemoriesRequest");
 
-    async fn receive_message(&mut self) -> Result<InternalMessage> {
-        // Read message length (u32)
-        let mut len_bytes = [0u8; 4];
-        self.reader.read_exact(&mut len_bytes).await?;
-        let len = u32::from_be_bytes(len_bytes) as usize;
-        debug!(len, "Expecting message of length");
+        // Receive response
+        let mut len_bytes_resp = [0u8; 4];
+        buf_reader.read_exact(&mut len_bytes_resp).await?;
+        let len_resp = u32::from_be_bytes(len_bytes_resp) as usize;
+        let mut buffer_resp = vec![0u8; len_resp];
+        buf_reader.read_exact(&mut buffer_resp).await?;
+        let response: InternalMessage = serde_json::from_slice(&buffer_resp)?;
+        debug!("Received response from IDA");
 
-        // Read the message body
-        let mut buffer = vec![0u8; len];
-        self.reader.read_exact(&mut buffer).await?;
-        debug!(size = buffer.len(), "Received message data from IDA");
-
-        // Deserialize
-        let message: InternalMessage = serde_json::from_slice(&buffer)?;
-        Ok(message)
-    }
-
-    pub async fn get_memories(&mut self, query: &str) -> Result<Vec<MemoryItem>> {
-        let request = InternalMessage::GetMemoriesRequest {
-            query: query.to_string(),
-        };
-        self.send_message(&request).await?;
-
-        match self.receive_message().await? {
+        match response {
             InternalMessage::GetMemoriesResponse { memories } => Ok(memories),
             _ => Err(IdaClientError::UnexpectedResponse),
         }
+        // Connection automatically closed when stream/reader/writer go out of scope
     }
 
-    pub async fn store_turn_async(&mut self, turn_data: ConversationTurn) -> Result<()> {
+    // Static method: Connects, sends, disconnects.
+    pub async fn store_turn_async(socket_path: &str, turn_data: ConversationTurn) -> Result<()> {
+        let stream = Self::connect_with_retry(socket_path).await?;
+        let (_reader, writer) = stream.into_split(); // Don't need reader
+        let mut buf_writer = BufWriter::new(writer);
+
         let request = InternalMessage::StoreTurnRequest { turn_data };
-        // Send and forget (no response expected for this message type)
-        self.send_message(&request).await
+        let serialized = serde_json::to_vec(&request)?;
+        let len_bytes = (serialized.len() as u32).to_be_bytes();
+        buf_writer.write_all(&len_bytes).await?;
+        buf_writer.write_all(&serialized).await?;
+        buf_writer.flush().await?;
+        debug!("Sent StoreTurnRequest asynchronously");
+        Ok(())
+         // Connection automatically closed when stream/writer go out of scope
     }
-
-    // Optional: Method to explicitly close the connection or handle disconnection
-    // pub async fn close(mut self) -> Result<()> {
-    //     self.writer.shutdown().await?;
-    //     Ok(())
-    // }
 }

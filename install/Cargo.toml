@@ -1,0 +1,22 @@
+[package]
+name = "gemini-installer"
+version = "0.1.0"
+edition = "2021"
+description = "Installer for the Gemini CLI Suite"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive", "env"] }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+home = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+dirs = "5.0"
+nix = { version = "0.27", features = ["signal"] }
+toml = "0.8"
+
+[[bin]]
+name = "gemini-installer"
+path = "src/main.rs" 

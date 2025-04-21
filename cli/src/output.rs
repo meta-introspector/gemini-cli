@@ -1,92 +1,34 @@
 use colored::*;
-use dialoguer::{Confirm, theme::ColorfulTheme};
 use pulldown_cmark::{
     CodeBlockKind, Event as MdEvent, HeadingLevel, Options, Parser as MdParser, Tag,
 };
-use std::error::Error;
-use std::process::Command;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::{LinesWithEndings, as_24_bit_terminal_escaped};
 
-/// Print formatted Gemini response to the terminal
-pub fn print_gemini_response(response: &str, is_command: bool) {
-    if is_command {
-        // Just print the raw command suggestion without rendering
-        println!(
-            "{}: `{}`",
-            "Suggested command".cyan(),
-            response.trim().green()
-        );
-    } else {
-        // Render markdown in the response for normal chat
-        let rendered_response = render_markdown(response);
+/// Print formatted response from HAPPE daemon to the terminal
+pub fn print_happe_response(response: &str) {
+    // Render markdown in the response
+    let rendered_response = render_markdown(response);
 
-        // Print the response with a colored prefix
-        println!("{}: {}", "Gemini".blue().bold(), rendered_response);
-    }
-}
-
-/// Placeholder for handling command confirmation (requires user interaction)
-#[allow(dead_code)]
-pub fn handle_command_confirmation(potential_command: &str) -> Result<(), Box<dyn Error>> {
-    if potential_command.is_empty() {
-        eprintln!("{}", "Gemini did not suggest a command.".yellow());
-        return Ok(());
-    }
-
-    println!(
-        "{}: `{}`",
-        "Suggested command".cyan(),
-        potential_command.green()
-    );
-
-    if Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Do you want to run this command?")
-        .default(true)
-        .interact()?
-    {
-        println!("{}", "Executing command...".cyan());
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(potential_command)
-            .output()?; // Use output() to capture stdout/stderr
-
-        if output.status.success() {
-            println!("{}", "Command executed successfully:".green());
-            if !output.stdout.is_empty() {
-                println!("{}", String::from_utf8_lossy(&output.stdout).blue());
-            }
-        } else {
-            eprintln!("{}", "Command failed:".red());
-            if !output.stderr.is_empty() {
-                eprintln!("{}", String::from_utf8_lossy(&output.stderr).red());
-            }
-        }
-    } else {
-        println!("{}", "Command not executed.".yellow());
-    }
-
-    Ok(())
+    // Print the response with a colored prefix
+    println!("{}: {}", "Assistant".blue().bold(), rendered_response);
 }
 
 /// Show usage instructions when no prompt or action is provided
 pub fn print_usage_instructions() {
-    println!("{}", "No prompt provided. Here are your options:".yellow());
-    println!("  {}", "gemini \"your prompt\"".green().bold());
-    println!("    Ask Gemini a single question or give it a task");
+    println!("{}", "Usage:".yellow().bold());
+    println!("  {}", "gemini-cli \"your prompt\"".green().bold());
+    println!("    Send a single query to the HAPPE daemon");
     println!();
-    println!("  {}", "gemini -i".green().bold());
-    println!("    Start an interactive chat session with Gemini");
+    println!("  {}", "gemini-cli -i".green().bold());
+    println!("    Start an interactive chat session with the HAPPE daemon");
     println!();
-    println!("  {}", "gemini -t \"your task description\"".green().bold());
-    println!("    Start a task loop where Gemini works on a specific task until completion");
+    println!("{}", "Options:".cyan());
+    println!("  --happe-ipc-path <PATH>  Specify HAPPE daemon socket path");
+    println!("  --help                   Show this help message");
     println!();
-    println!("{}", "Configuration options:".cyan());
-    println!("  --set-api-key, --set-system-prompt, --show-config");
-    println!();
-    println!("{}", "Use --help for more options.".cyan());
 }
 
 /// Render markdown in the terminal with syntax highlighting
@@ -102,7 +44,7 @@ pub fn render_markdown(markdown: &str) -> String {
     // Initialize syntax highlighting
     let syntax_set = SyntaxSet::load_defaults_newlines();
     let theme_set = ThemeSet::load_defaults();
-    let theme = &theme_set.themes["base16-ocean.dark"];
+    let theme = theme_set.themes.get("base16-ocean.dark").unwrap_or_else(|| theme_set.themes.values().next().unwrap());
 
     let mut in_code_block = false;
     let mut code_block_lang = String::new();

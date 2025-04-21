@@ -1,10 +1,8 @@
 // use std::io::{}; // Removed unused import
-use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::error::Error;
-use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::signal;

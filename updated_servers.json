@@ -1,0 +1,53 @@
+[
+  {
+    "name": "filesystem",
+    "enabled": true,
+    "transport": "stdio",
+    "command": [
+      "/home/james/.local/bin/filesystem-mcp"
+    ],
+    "args": [],
+    "env": {
+      "GEMINI_MCP_TIMEOUT": "120",
+      "GEMINI_CONFIG_DIR": "",
+      "DISABLE_HAPPE_CONNECTION_TEST": "true"
+    },
+    "auto_execute": []
+  },
+  {
+    "name": "command",
+    "enabled": true,
+    "transport": "stdio",
+    "command": [
+      "/home/james/.local/bin/command-mcp"
+    ],
+    "args": [],
+    "env": {
+      "GEMINI_MCP_TIMEOUT": "120",
+      "GEMINI_CONFIG_DIR": "",
+      "DISABLE_HAPPE_CONNECTION_TEST": "true"
+    },
+    "auto_execute": []
+  },
+  {
+    "name": "memory_store",
+    "enabled": true,
+    "transport": "stdio",
+    "command": [
+      "/home/james/.local/bin/memory-store-mcp"
+    ],
+    "args": [],
+    "env": {
+      "GEMINI_MCP_TIMEOUT": "120",
+      "GEMINI_CONFIG_DIR": "",
+      "DISABLE_HAPPE_CONNECTION_TEST": "true"
+    },
+    "auto_execute": [
+      "store_memory",
+      "list_all_memories",
+      "retrieve_memory_by_key",
+      "retrieve_memory_by_tag",
+      "delete_memory_by_key"
+    ]
+  }
+] 

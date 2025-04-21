@@ -1,113 +1,194 @@
 use crate::config::AppConfig;
 use crate::ida_client::IdaClient;
 use crate::llm_client;
+use crate::mcp_client::{self, McpHostClient};
+use anyhow::{anyhow, Result};
+use gemini_core::client::GeminiClient;
+use gemini_core::types::{Content, Part, Tool};
 use gemini_ipc::internal_messages::{ConversationTurn, MemoryItem};
-use std::io::{self, Write};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use gemini_mcp::gemini::{build_mcp_system_prompt, parse_function_calls};
+use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
-pub async fn run_coordinator(config: AppConfig) -> anyhow::Result<()> {
-    info!("Coordinator starting...");
+/// Process a single query from the user
+pub async fn process_query(
+    config: &AppConfig,
+    mcp_client: &McpHostClient,
+    gemini_client: &GeminiClient,
+    query: String,
+) -> Result<String> {
+    // 1. Get memories from IDA (Connects, gets, disconnects)
+    let memories = match IdaClient::get_memories(
+        config.ida_socket_path.to_str().unwrap_or_default(),
+        &query
+    ).await {
+        Ok(m) => {
+            info!(count = m.len(), "Retrieved memories from IDA");
+            m
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to retrieve memories from IDA, continuing without memories");
+            vec![]
+        }
+    };
 
-    // Create IDA client
-    let mut ida_client = IdaClient::connect(&config.ida_socket_path).await?;
-    info!("Connected to IDA daemon at {}", config.ida_socket_path);
+    // 2. Get MCP capabilities and build tool declarations
+    let capabilities = match mcp_client.get_capabilities().await {
+        Ok(caps) => caps,
+        Err(e) => {
+            warn!(error = %e, "Failed to get MCP capabilities, continuing without tools");
+            gemini_core::rpc_types::ServerCapabilities::default()
+        }
+    };
+    
+    let mcp_capabilities_prompt = build_mcp_system_prompt(&capabilities.tools, &capabilities.resources);
+    
+    let tools = if !capabilities.tools.is_empty() {
+        Some(vec![mcp_client::generate_tool_declarations(&capabilities.tools)])
+    } else {
+        None
+    };
 
-    // Placeholder: Simple loop reading from stdin
-    let mut stdin = BufReader::new(tokio::io::stdin());
-    let mut stdout = io::stdout();
+    // 3. Construct prompt with memories
+    let system_prompt = format!(
+        "{}\n{}",
+        config.system_prompt,
+        mcp_capabilities_prompt
+    );
+    
+    let formatted_prompt = construct_prompt(&query, &memories);
+    debug!(prompt = formatted_prompt, "Constructed prompt");
 
-    loop {
-        print!("> ");
-        stdout.flush()?;
+    // 4. Call LLM with the prompt
+    let (response_text, function_calls) = match llm_client::generate_response(
+        gemini_client,
+        &formatted_prompt,
+        &system_prompt,
+        tools.as_ref().map(|v| &**v),
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!(error = %e, "Failed to get response from LLM");
+            return Err(anyhow!("Failed to get response from LLM: {}", e));
+        }
+    };
 
-        let mut line = String::new();
-        match stdin.read_line(&mut line).await {
-            Ok(0) => {
-                info!("Input stream closed, exiting.");
-                break; // EOF
-            }
-            Ok(_) => {
-                let query = line.trim();
-                if query.is_empty() {
-                    continue;
-                }
-                if query == "exit" || query == "quit" {
-                    break;
-                }
+    // 5. Store the conversation turn asynchronously
+    let turn_data = ConversationTurn {
+        user_query: query.to_string(),
+        retrieved_memories: memories.clone(),
+        llm_response: response_text.clone(),
+        // Add other fields as needed
+    };
+    
+    // Use the static method to store the turn
+    if let Err(e) = IdaClient::store_turn_async(
+        config.ida_socket_path.to_str().unwrap_or_default(), 
+        turn_data
+    ).await {
+        warn!(error = %e, "Failed to send turn data to IDA for storage");
+        // Continue despite error
+    }
 
-                info!(query, "Received user query");
-
-                // 1. Get memories from IDA
-                let memories = match ida_client.get_memories(query).await {
-                    Ok(m) => {
-                        info!(count = m.len(), "Retrieved memories from IDA");
-                        m
+    // 6. Handle any function calls from the LLM
+    let mut final_response = response_text;
+    
+    if !function_calls.is_empty() {
+        debug!(
+            function_calls_count = function_calls.len(),
+            "Processing function calls"
+        );
+        
+        for function_call in function_calls {
+            // Extract server and tool names
+            let qualified_name = function_call.name.replace(".", "/");
+            let parts: Vec<&str> = qualified_name.splitn(2, "/").collect();
+            
+            if parts.len() == 2 {
+                let server_name = parts[0];
+                let tool_name = parts[1];
+                
+                info!(
+                    server = server_name,
+                    tool = tool_name,
+                    "Executing tool"
+                );
+                
+                match mcp_client.execute_tool(
+                    server_name,
+                    tool_name,
+                    function_call.arguments,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        debug!(
+                            result = ?result,
+                            "Tool execution succeeded"
+                        );
+                        
+                        // For simplicity, we're adding the tool result to the response
+                        // In a more robust implementation, we'd send it back to the LLM for further processing
+                        let result_str = serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| result.to_string());
+                        
+                        final_response = format!(
+                            "{}\n\nFunction call result: {}",
+                            final_response, result_str
+                        );
                     }
                     Err(e) => {
-                        error!(error = %e, "Failed to retrieve memories from IDA");
-                        // Decide how to proceed - maybe continue without memories?
-                        vec![]
+                        error!(
+                            error = %e,
+                            "Tool execution failed"
+                        );
+                        
+                        final_response = format!(
+                            "{}\n\nFunction call error: {}",
+                            final_response, e
+                        );
                     }
-                };
-
-                // 2. Construct prompt (Placeholder)
-                let prompt = construct_prompt(query, &memories);
-                debug!(prompt, "Constructed prompt");
-
-                // 3. Call LLM (Placeholder)
-                let llm_response = match llm_client::generate_response(&prompt).await {
-                    Ok(resp) => {
-                        info!("Received response from LLM");
-                        resp
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Failed to get response from LLM");
-                        // Provide error message to user
-                        "Sorry, I encountered an error talking to the language model.".to_string()
-                    }
-                };
-
-                // 4. Handle tool calls (Placeholder - none for now)
-
-                // 5. Send response to user
-                println!("LLM: {}", llm_response);
-
-                // 6. Store conversation turn asynchronously
-                let turn_data = ConversationTurn {
-                    user_query: query.to_string(),
-                    retrieved_memories: memories.clone(), // Clone memories for storage
-                    llm_response: llm_response.clone(),
-                    // Add other relevant fields like timestamps, context, etc.
-                };
-                if let Err(e) = ida_client.store_turn_async(turn_data).await {
-                    warn!(error = %e, "Failed to send turn data to IDA for storage");
-                    // Log the error, but don't block the user flow
                 }
-            }
-            Err(e) => {
-                error!(error = %e, "Error reading from stdin");
-                break; // Exit on stdin error
+            } else {
+                warn!(
+                    name = function_call.name,
+                    "Invalid function call name format"
+                );
             }
         }
     }
 
-    info!("Coordinator finished.");
-    Ok(())
+    Ok(final_response)
 }
 
-// Placeholder prompt construction
+// Improved prompt construction with memories
 fn construct_prompt(query: &str, memories: &[MemoryItem]) -> String {
-    let mut prompt = String::new();
+    let mut content_parts = Vec::new();
+    
+    // Add memory context if available
     if !memories.is_empty() {
-        prompt.push_str("Relevant previous interactions:\n");
-        for mem in memories {
-            // Basic formatting, could be more sophisticated
-            prompt.push_str(&format!("- {}\n", mem.content));
+        let mut memory_text = String::new();
+        memory_text.push_str("Relevant previous interactions:\n");
+        
+        for (i, mem) in memories.iter().enumerate() {
+            memory_text.push_str(&format!("{}. {}\n", i + 1, mem.content));
         }
-        prompt.push_str("\n---\n\n");
+        
+        memory_text.push_str("\n");
+        content_parts.push(Content {
+            parts: vec![Part::text(memory_text)],
+            role: Some("user".to_string()),
+        });
     }
-    prompt.push_str(&format!("User query: {}\n", query));
-    prompt.push_str("Response:"); // Let the LLM complete
-    prompt
+    
+    // Add the current query
+    content_parts.push(Content {
+        parts: vec![Part::text(query.to_string())],
+        role: Some("user".to_string()),
+    });
+    
+    // Convert to the format expected by generate_response
+    format!("{}", query)
 }

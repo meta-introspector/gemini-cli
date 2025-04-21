@@ -8,6 +8,8 @@ members = [
     "ipc",       # Inter-process communication definitions
     "ida",       # Internal Dialogue App daemon
     "happe",     # Host Application Environment daemon (Placeholder)
+    "install",   # Installer crate for Gemini CLI Suite
+    "daemon-manager", # CLI for managing gemini-suite daemons and MCP servers
 ]
 
 [workspace.lints]

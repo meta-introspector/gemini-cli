@@ -29,6 +29,10 @@ MCP_WRAPPER_INSTALL_PATH="$BINARY_DIR/mcp-servers"
 # Define the path for the main CLI binary using the argument
 GEMINI_CLI_BIN_PATH="$BINARY_DIR/$CLI_BINARY_NAME"
 
+# Define configuration directories
+UNIFIED_CONFIG_DIR="$HOME/.config/gemini-suite"
+mkdir -p "$UNIFIED_CONFIG_DIR"
+
 # --- Built-in Rust Servers ---
 
 # Create a simple wrapper script for the filesystem MCP
@@ -52,7 +56,7 @@ if [ ! -x "$GEMINI_CLI" ]; then
 fi
 
 # Forward all input to the binary with the --filesystem-mcp flag
-exec "$GEMINI_CLI" --filesystem-mcp "$@"
+GEMINI_CONFIG_DIR="$UNIFIED_CONFIG_DIR" exec "$GEMINI_CLI" --filesystem-mcp "$@"
 EOF
 
 # Make the wrapper script executable
@@ -78,7 +82,7 @@ if [ ! -x "$GEMINI_CLI" ]; then
 fi
 
 # Forward all input to the binary with the --command-mcp flag
-exec "$GEMINI_CLI" --command-mcp "$@"
+GEMINI_CONFIG_DIR="$UNIFIED_CONFIG_DIR" exec "$GEMINI_CLI" --command-mcp "$@"
 EOF
 
 # Make the wrapper script executable
@@ -104,7 +108,7 @@ if [ ! -x "$GEMINI_CLI" ]; then
 fi
 
 # Forward all input to the binary with the --memory-store-mcp flag
-exec "$GEMINI_CLI" --memory-store-mcp "$@"
+GEMINI_CONFIG_DIR="$UNIFIED_CONFIG_DIR" exec "$GEMINI_CLI" --memory-store-mcp "$@"
 EOF
 
 # Make the wrapper script executable
@@ -169,8 +173,8 @@ SERVER_SCRIPT="$SERVER_SCRIPT_DEST_PATH"
 # Activate virtual environment
 source "$VENV_DIR/bin/activate"
 
-# Execute the Python server script
-exec python3 "$SERVER_SCRIPT" "$@"
+# Execute the Python server script with the unified config directory
+GEMINI_CONFIG_DIR="$UNIFIED_CONFIG_DIR" exec python3 "$SERVER_SCRIPT" "$@"
 EOF
             # Make the wrapper script executable
             chmod +x "$EMBEDDING_WRAPPER_SCRIPT"
@@ -181,156 +185,97 @@ else
 fi
 
 
-# --- Configuration Setup ---
+# --- Unified Configuration Setup ---
 
-# Create or update the default MCP servers configuration
-MCP_CONFIG_DIR="$HOME/.config/gemini-cli"
-mkdir -p "$MCP_CONFIG_DIR"
+# Create or update the unified configuration
+UNIFIED_CONFIG_FILE="$UNIFIED_CONFIG_DIR/config.toml"
 
-MCP_CONFIG_FILE="$MCP_CONFIG_DIR/mcp_servers.json"
-MCP_CONFIG_EXAMPLE="$MCP_CONFIG_DIR/mcp_servers.example.json"
+# Check if we have a unified configuration file generation tool 
+# and the config doesn't already exist
+if [ -f "$WORKSPACE_DIR/target/release/generate_unified_config" ] && [ ! -f "$UNIFIED_CONFIG_FILE" ]; then
+    echo "Generating unified configuration file using the generator tool..."
+    "$WORKSPACE_DIR/target/release/generate_unified_config"
+elif [ ! -f "$UNIFIED_CONFIG_FILE" ]; then
+    # Create a minimal template file if the generator isn't available
+    echo "Creating a minimal unified configuration template..."
+    
+    mkdir -p "$UNIFIED_CONFIG_DIR"
+    
+    cat > "$UNIFIED_CONFIG_FILE" << EOF
+# Gemini Suite Unified Configuration
 
-# Create an example configuration
-echo "Creating/Updating example configuration..."
-# Base example structure with filesystem, command, memory_store servers
-FS_CMD="$MCP_WRAPPER_INSTALL_PATH/filesystem-mcp"
-CMD_CMD="$MCP_WRAPPER_INSTALL_PATH/command-mcp"
-MEM_CMD="$MCP_WRAPPER_INSTALL_PATH/memory-store-mcp"
+# Gemini API configuration
+[gemini]
+api_key = "YOUR_API_KEY_HERE"
+model_name = "gemini-2.5-pro-preview-03-25"
+system_prompt = "You are a helpful assistant. Answer the user's questions concisely and accurately."
+save_history = true
+enable_memory_broker = true
+enable_auto_memory = true
+memory_broker_model = "gemini-2.0-flash"
 
-cat > "$MCP_CONFIG_EXAMPLE" << EOF
-[
-  {
-    "name": "filesystem",
-    "enabled": true,
-    "transport": "stdio",
-    "command": [
-      "$FS_CMD"
-    ],
-    "args": [],
-    "env": {
-      "GEMINI_MCP_TIMEOUT": "120"
-    },
-    "auto_execute": []
-  },
-  {
-    "name": "command",
-    "enabled": true,
-    "transport": "stdio",
-    "command": [
-      "$CMD_CMD"
-    ],
-    "args": [],
-    "env": {
-      "GEMINI_MCP_TIMEOUT": "120"
-    },
-    "auto_execute": []
-  },
-  {
-    "name": "memory_store",
-    "enabled": true,
-    "transport": "stdio",
-    "command": [
-      "$MEM_CMD"
-    ],
-    "args": [],
-    "env": {
-      "GEMINI_MCP_TIMEOUT": "120"
-    },
-    "auto_execute": ["store_memory", "list_all_memories", "retrieve_memory_by_key", "retrieve_memory_by_tag", "delete_memory_by_key"]
-  }
-]
+# HAPPE daemon configuration
+[happe]
+ida_socket_path = "/tmp/gemini_suite_ida.sock"
+happe_socket_path = "/tmp/gemini_suite_happe.sock"
+http_enabled = true
+http_bind_addr = "127.0.0.1:8080"
+
+# IDA daemon configuration
+[ida]
+socket_path = "/tmp/gemini_suite_ida.sock"
+
+# Memory configuration
+[memory]
+storage_path = "$UNIFIED_CONFIG_DIR/memory"
+embedding_model = "gemini-2.0-flash"
+
+# MCP server configuration
+[[mcp.servers]]
+name = "filesystem"
+enabled = true
+transport = "stdio"
+command = ["$MCP_WRAPPER_INSTALL_PATH/filesystem-mcp"]
+args = []
+auto_execute = []
+
+[[mcp.servers]]
+name = "command"
+enabled = true
+transport = "stdio"
+command = ["$MCP_WRAPPER_INSTALL_PATH/command-mcp"]
+args = []
+auto_execute = []
+
+[[mcp.servers]]
+name = "memory_store"
+enabled = true
+transport = "stdio"
+command = ["$MCP_WRAPPER_INSTALL_PATH/memory-store-mcp"]
+args = []
+auto_execute = ["store_memory", "list_all_memories", "retrieve_memory_by_key", "retrieve_memory_by_tag", "delete_memory_by_key"]
 EOF
 
-# Add embedding server to example if it was enabled
-if [ "$EMBEDDING_SERVER_ENABLED" = true ]; then
-    EMB_CMD="$MCP_WRAPPER_INSTALL_PATH/embedding-mcp"
-    # Use jq if available for cleaner JSON manipulation
-    if command -v jq > /dev/null; then
-        jq --arg path "$EMB_CMD" \
-           '. += [{"name": "embedding", "enabled": true, "transport": "stdio", "command": [$path], "args": [], "env": {"GEMINI_MCP_TIMEOUT": "120"}, "auto_execute": ["embed"]}]' \
-           "$MCP_CONFIG_EXAMPLE" > "$MCP_CONFIG_EXAMPLE.tmp" && mv "$MCP_CONFIG_EXAMPLE.tmp" "$MCP_CONFIG_EXAMPLE"
-    else
-        # Fallback to string manipulation (less robust)
-        # Remove last ']'
-        sed -i '$ d' "$MCP_CONFIG_EXAMPLE"
-        # Add comma and new entry
-        cat >> "$MCP_CONFIG_EXAMPLE" << EOF
-  },
-  {
-    "name": "embedding",
-    "enabled": true,
-    "transport": "stdio",
-    "command": ["$EMB_CMD"],
-    "args": [],
-    "env": {
-      "GEMINI_MCP_TIMEOUT": "120"
-    },
-    "auto_execute": ["embed"]
-  }
-]
+    # Add embedding server if enabled
+    if [ "$EMBEDDING_SERVER_ENABLED" = true ]; then
+        cat >> "$UNIFIED_CONFIG_FILE" << EOF
+
+[[mcp.servers]]
+name = "embedding"
+enabled = true
+transport = "stdio"
+command = ["$MCP_WRAPPER_INSTALL_PATH/embedding-mcp"]
+args = []
+auto_execute = ["embed"]
 EOF
     fi
-fi
-
-
-# Copy the example to the actual config if it doesn't exist
-if [ ! -f "$MCP_CONFIG_FILE" ]; then
-    echo "Creating initial MCP servers configuration..."
-    cp "$MCP_CONFIG_EXAMPLE" "$MCP_CONFIG_FILE"
-    echo "Created MCP configuration at $MCP_CONFIG_FILE"
+    
+    echo "Created unified configuration template at $UNIFIED_CONFIG_FILE"
+    echo "Please edit this file to set your API key and customize other settings."
 else
-    echo "Existing MCP configuration found at $MCP_CONFIG_FILE"
-
-    # Ensure 'jq' is available for reliable JSON updates
-    if ! command -v jq &> /dev/null; then
-        echo "Warning: 'jq' command not found. Configuration updates might be skipped or less reliable." >&2
-        echo "         Please install 'jq' for automatic configuration management." >&2
-        
-        # Without jq, just copy the example file but warn the user
-        echo "Warning: Overwriting existing configuration with example. You may need to manually restore custom settings." >&2
-        cp "$MCP_CONFIG_EXAMPLE" "$MCP_CONFIG_FILE"
-    else
-        echo "Updating existing configuration using jq..."
-        # Update existing configuration, maintaining any custom settings but ensuring
-        # all servers exist and have proper environment variables/paths
-        
-        # Create a temporary file with the target configuration based on the example
-        TEMP_TARGET_CONFIG="$TEMP_WRAPPER_DIR/target_config.json"
-        cp "$MCP_CONFIG_EXAMPLE" "$TEMP_TARGET_CONFIG"
-
-        # Merge the target config into the existing one using jq
-        # This adds missing servers and updates command paths and default env/auto_execute for existing ones.
-        # It preserves user changes like 'enabled' status or custom args/env.
-        JQ_SCRIPT='map( \
-            . as $target_server | \
-            ($existing[0][] | select(.name == $target_server.name)) as $existing_server | \
-            if $existing_server then \
-                # Merge existing with target: target command overrides, env merges, auto_execute merges uniquely \
-                $existing_server + \
-                {command: $target_server.command} + \
-                {env: ($target_server.env // {} + $existing_server.env // {})} + \
-                {auto_execute: ($target_server.auto_execute // [] + $existing_server.auto_execute // [] | unique)} \
-            else \
-                # Add the new server from target config \
-                $target_server \
-            end \
-        )'
-        MERGED_CONFIG=$(jq --slurpfile existing "$MCP_CONFIG_FILE" "$JQ_SCRIPT" "$TEMP_TARGET_CONFIG")
-
-        # Check if jq command succeeded
-        if [ $? -ne 0 ]; then
-            echo "Error: jq command failed during configuration merge." >&2
-            echo "       Original configuration file preserved." >&2
-            rm "$TEMP_TARGET_CONFIG"
-        else \
-            # Write the merged config back \
-            echo "$MERGED_CONFIG" | jq '.' > "$MCP_CONFIG_FILE" # Pretty print with jq \
-            rm "$TEMP_TARGET_CONFIG" \
-            echo "Configuration updated." \
-        fi \
-    fi # End jq check
+    echo "Unified configuration file already exists at $UNIFIED_CONFIG_FILE"
+    echo "Not overwriting existing configuration."
 fi
-
 
 # Create installation path for MCP servers
 mkdir -p "$MCP_WRAPPER_INSTALL_PATH"
@@ -360,4 +305,7 @@ echo "Cleaning up temporary wrapper directory..."
 rm -rf "$TEMP_WRAPPER_DIR"
 
 echo "MCP server wrappers installed successfully!"
-echo "Configuration at: $MCP_CONFIG_FILE" 
+echo "Unified configuration at: $UNIFIED_CONFIG_FILE"
+echo ""
+echo "NOTE: All daemons will now use this unified configuration file"
+echo "      located at $UNIFIED_CONFIG_FILE" 

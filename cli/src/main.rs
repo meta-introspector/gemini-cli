@@ -1,333 +1,93 @@
 use clap::Parser;
 use colored::*;
 use dotenv::dotenv;
-use std::env;
 use std::error::Error;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
 
+// Modules used by the refactored CLI
 mod app;
 mod cli;
-mod config;
-mod history;
-mod ipc_client;
+mod happe_client; // Renamed from ipc_client
 mod logging;
-mod memory_broker;
 mod output;
-mod utils; // Add the new IPC client module
+// Removed: config, history, memory_broker, utils, gemini-core imports, etc.
 
-// Import the new context struct
-use crate::app::SessionContext;
-// Import from workspace crates
-use gemini_core::client::GeminiClient;
-use gemini_core::config::{GeminiConfig, get_default_config_dir, get_default_config_file};
-// Import and re-export needed functionality from gemini_mcp
-use gemini_mcp::{McpHost, build_mcp_system_prompt, load_mcp_servers, sanitize_json_schema};
-// Import MemoryStore
-use gemini_memory::{MemoryStore, broker::McpHostInterface};
-// Import our config extension and memory broker
-use crate::config::AsyncMemoryConfigExt;
-use crate::memory_broker::MemoryBroker;
-
+// Import the simplified Args
 use crate::cli::Args;
-
-use crate::history::generate_session_id;
+// Import the Happe client
+use crate::happe_client::HappeClient;
 use crate::logging::{log_error, log_info};
 use crate::output::print_usage_instructions;
 
-// Import our new IPC client
-use ipc_client::McpDaemonClient;
-
-/// Main function - handle command line args and talk to Gemini API
+/// Main function - Connects to HAPPE daemon and sends queries
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize logger
-    env_logger::init();
+    // Consider making log level configurable via Args if needed
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Load environment variables
+    // Load environment variables (might still be useful for HAPPE_IPC_PATH)
     dotenv().ok();
 
     // Parse command-line arguments
     let args = Args::parse();
 
-    // Handle MCP server modes
+    // --- Handle Standalone MCP Server Modes (Kept from original) ---
+    // Note: These require gemini-mcp features/dependencies if kept.
+    // Ensure Cargo.toml reflects this if these modes are intended to work.
+    /*
     if args.filesystem_mcp {
-        return gemini_mcp::filesystem::run().await;
+        // Placeholder: Add gemini-mcp dependency and uncomment
+        // return gemini_mcp::filesystem::run().await;
+        unimplemented!("Filesystem MCP server mode requires gemini-mcp crate");
     } else if args.command_mcp {
-        return gemini_mcp::command::run().await;
+        // Placeholder: Add gemini-mcp dependency and uncomment
+        // return gemini_mcp::command::run().await;
+        unimplemented!("Command MCP server mode requires gemini-mcp crate");
     } else if args.memory_store_mcp {
-        return gemini_mcp::memory_store::run()
-            .await
-            .map_err(|e| e as Box<dyn Error>);
+        // Placeholder: Add gemini-mcp and gemini-memory dependencies and uncomment
+        // return gemini_mcp::memory_store::run()
+        //     .await
+        //     .map_err(|e| e.into());
+        unimplemented!("Memory Store MCP server mode requires gemini-mcp/memory crates");
     }
+    */
+    // --- End Standalone MCP Server Modes ---
 
-    // Use gemini_core::config helpers
-    let config_dir = get_default_config_dir("gemini-cli")?;
-    fs::create_dir_all(&config_dir)?;
-    let config_path = get_default_config_file("gemini-cli")?;
-    let mut config = GeminiConfig::load_from_file(&config_path)?;
-
-    // --- Inline handle_config_flags logic ---
-    let mut config_updated = false;
-    if let Some(key) = &args.set_api_key {
-        config.api_key = Some(key.clone());
-        println!("API key set in config.");
-        config_updated = true;
-    }
-    if let Some(prompt) = &args.set_system_prompt {
-        config.system_prompt = Some(prompt.clone());
-        println!("System prompt set in config.");
-        config_updated = true;
-    }
-    if let Some(model) = &args.set_model {
-        config.model_name = Some(model.clone());
-        println!("Model name set in config.");
-        config_updated = true;
-    }
-    // Add other flags as needed...
-
-    if config_updated {
-        config.save_to_file(&config_path)?;
-        println!("Configuration saved to {}", config_path.display());
-        return Ok(()); // Exit after saving config changes
-    }
-    // --- End of inlined logic ---
-
-    // Validate API key
-    let api_key_from_config = config.api_key.clone();
-    let api_key_from_env = env::var("GEMINI_API_KEY").ok();
-
-    let api_key = match api_key_from_config {
-        Some(key) if !key.is_empty() => Ok(key),
-        _ => match api_key_from_env {
-            Some(key) if !key.is_empty() => Ok(key),
-            _ => Err(
-                "API key not found in config or GEMINI_API_KEY env var, or it is empty."
-                    .to_string(),
-            ),
-        },
-    };
-
-    let api_key = match api_key {
-        Ok(key) => key,
-        Err(msg) => {
-            eprintln!("{}", msg.red());
-            return Ok(()); // Exit gracefully
-        }
-    };
-
-    // Update config with env var if it was used and config didn't have one
-    if config.api_key.is_none() {
-        config.api_key = Some(api_key.clone());
-    }
-
-    // Create Gemini API client
-    let gemini_client = GeminiClient::new(config.clone())?;
-
-    // Try to connect to the MCP daemon first
-    let mut mcp_client: Option<McpDaemonClient> = None;
-    let mut mcp_host: Option<McpHost> = None;
-
-    let socket_path = match McpDaemonClient::get_default_socket_path() {
-        Ok(path) => {
-            log_info(&format!("Using daemon socket path: {}", path.display()));
-            path
-        }
+    // Initialize HappeClient
+    let happe_client = match HappeClient::new(args.happe_ipc_path.clone()) {
+        Ok(client) => client,
         Err(e) => {
-            log_info(&format!("Failed to determine daemon socket path: {}", e));
-            // Will try direct McpHost instead
-            PathBuf::new()
+            log_error(&format!("Failed to initialize Happe Client: {}", e));
+            eprintln!("{}", format!("Error initializing IPC client: {}", e).red());
+            return Err(e.into());
         }
     };
 
-    if !socket_path.as_os_str().is_empty() {
-        let client = McpDaemonClient::new(socket_path);
-        if let Ok(true) = client.test_connection().await {
-            log_info("Successfully connected to MCP daemon");
-            mcp_client = Some(client);
-        } else {
-            log_info("Could not connect to MCP daemon, will try direct MCP host initialization");
-        }
-    }
-
-    // If daemon connection failed, fall back to direct MCP host initialization
-    if mcp_client.is_none() {
-        match load_mcp_servers() {
-            Ok(server_configs) if !server_configs.is_empty() => {
-                match McpHost::new(server_configs).await {
-                    Ok(host) => {
-                        if let Ok(system_info) = host.get_system_info().await {
-                            log_info(&format!("Resource access test: {}", system_info));
-                        }
-                        host.log_to_servers("Gemini CLI started", 3).await;
-                        mcp_host = Some(host);
-                        log_info("MCP server host initialized successfully");
-                    }
-                    Err(e) => {
-                        log_error(&format!("Failed to create McpHost: {}", e));
-                    }
-                }
-            }
-            Ok(_) => { /* No servers configured */ }
-            Err(e) => {
-                log_error(&format!("Failed to load MCP server configs: {}", e));
-            }
-        }
-    }
-
-    // Memory Store Initialization
-    let mcp_interface: Option<Arc<dyn McpHostInterface + Send + Sync + 'static>> =
-        if let Some(client) = &mcp_client {
-            // Use the daemon client for MemoryStore if available
-            Some(Arc::new(client.clone()) as Arc<dyn McpHostInterface + Send + Sync + 'static>)
-        } else if let Some(host) = &mcp_host {
-            // Fall back to direct McpHost if daemon isn't available
-            Some(Arc::new(host.clone()) as Arc<dyn McpHostInterface + Send + Sync + 'static>)
-        } else {
-            // No MCP available at all
-            None
-        };
-
-    // Create a standard memory store with our async broker
-    let memory_store = match MemoryStore::new(None, None, mcp_interface).await {
-        Ok(store) => {
-            // Use our memory broker with async capability
-            let broker = MemoryBroker::new(
-                store,
-                config.async_memory_enabled(), // Use the async configuration flag
-            );
-
-            if config.async_memory_enabled() {
-                log_info("Memory store initialized with async embedding enabled");
-            } else {
-                log_info("Memory store initialized with synchronous processing");
-            }
-
-            Some(broker)
-        }
-        Err(e) => {
-            log_error(&format!(
-                "Failed to initialize MemoryStore: {}. Memory features disabled.",
-                e
-            ));
-            None
-        }
-    };
-
-    // History decision (simplified, assumes bool field in GeminiConfig)
-    let should_save_history = config.save_history.unwrap_or(true) && !args.disable_history;
-
-    // System prompt (directly from GeminiConfig)
-    let system_prompt = config.system_prompt.clone().unwrap_or_else(|| {
-        "You are a helpful assistant that lives in the command line interface. You are friendly, and a professional programmer and developer.".to_string()
-    });
-
-    // Session ID generation (remains the same)
-    let session_id = generate_session_id();
-
-    // Create SessionContext instance
-    let session_context = SessionContext {
-        config_dir: config_dir.clone(), // Clone PathBuf
-        session_id,
-        should_save_history,
-        system_prompt,
-    };
-
-    // Print session ID export (remains the same)
-    if (env::var("DEBUG").is_ok() || session_context.session_id.starts_with("day_")) // Use context
-        && !args.disable_history
-        && args.prompt.is_some()
-    {
-        println!(
+    // Test connection to HAPPE daemon
+    if !happe_client.test_connection().await? {
+        eprintln!(
             "{}",
-            "\nTo maintain chat history across commands, run:".cyan()
+            "Could not connect to HAPPE daemon. Please ensure it is running.".red()
         );
-        println!(
-            "export GEMINI_SESSION_ID=\"{}\"",
-            session_context.session_id
-        ); // Use context
-        println!();
+        return Ok(()); // Exit gracefully if cannot connect
     }
+    log_info("Successfully connected to HAPPE daemon.");
 
-    // Determine whether to use MCP client or host
-    let mcp_provider = if let Some(client) = mcp_client.as_ref() {
-        McpProvider::Client(client)
-    } else {
-        McpProvider::Host(mcp_host.as_ref())
-    };
-
-    // Call app logic, passing GeminiClient and SessionContext
-    if args.interactive && args.task.is_some() {
-        // Handle combined interactive (-i) and task (-t) mode
-        if let Err(e) = crate::app::run_interactive_task_chat(
-            &args,
-            &config,
-            &gemini_client,
-            &mcp_provider,
-            &memory_store,
-            &session_context,
-            args.task.as_ref().unwrap(),
-        )
-        .await
-        {
-            eprintln!("Error in interactive task chat: {}", e);
-        }
-    } else if args.interactive {
-        if let Err(e) = crate::app::run_interactive_chat(
-            &args,
-            &config,
-            &gemini_client,
-            &mcp_provider,
-            &memory_store,
-            &session_context, // Pass context
-        )
-        .await
-        {
-            eprintln!("Error in interactive chat: {}", e);
-        }
-    } else if let Some(task) = &args.task {
-        if let Err(e) = crate::app::run_task_loop(
-            &args,
-            &config,
-            &gemini_client,
-            &mcp_provider,
-            &memory_store,
-            &session_context, // Pass context
-            task,
-        )
-        .await
-        {
-            eprintln!("Error in task loop: {}", e);
+    // Call app logic based on arguments
+    if args.interactive {
+        if let Err(e) = crate::app::run_interactive_chat(&happe_client).await {
+            log_error(&format!("Error in interactive chat: {}", e));
+            eprintln!("{}", format!("Interactive chat failed: {}", e).red());
         }
     } else if let Some(prompt) = args.prompt.clone() {
-        if let Err(e) = crate::app::process_prompt(
-            &args,
-            &config,
-            &gemini_client,
-            &mcp_provider,
-            &memory_store,
-            &session_context, // Pass context
-            &prompt,
-        )
-        .await
-        {
-            eprintln!("Error processing prompt: {}", e);
+        if let Err(e) = crate::app::run_single_query(prompt, &happe_client).await {
+            log_error(&format!("Error processing prompt: {}", e));
+            // Error is already printed in run_single_query
         }
     } else {
+        // No prompt and not interactive, show usage
         print_usage_instructions();
     }
 
-    // Shutdown MCP host if it was created directly
-    if let Some(host) = mcp_host {
-        host.shutdown().await;
-    }
-
     Ok(())
-}
-
-// Enum to represent either a direct McpHost or a daemon McpClient
-pub enum McpProvider<'a> {
-    Host(Option<&'a McpHost>),
-    Client(&'a McpDaemonClient),
 }

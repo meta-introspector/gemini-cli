@@ -8,19 +8,22 @@ edition = "2021"
 [dependencies]
 # Use the actual package name defined in ipc/Cargo.toml
 gemini-ipc = { path = "../ipc" }
-gemini-core = { path = "../core", optional = true } # Correct package name
+gemini-core = { path = "../core" } # Required for unified config loading
 gemini-mcp = { path = "../mcp", optional = true }   # Correct package name (assuming)
+gemini-memory = { path = "../memory" }  # Added memory crate
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml = "0.7" # For config file parsing
+dirs = "5.0" # For finding config directories
 
 # IPC Library (Using tokio's built-in for Unix sockets)
 # If using interprocess or other lib, add it here.
 
 # Configuration (Example using figment)
 # figment = { version = "0.10", features = ["env", "toml"] }
-# clap = { version = "4", features = ["derive"], optional = true } # Made optional as it was removed from bin
+clap = { version = "4", features = ["derive", "env"] } # Added for command-line argument parsing
 
 # Logging
 tracing = "0.1"

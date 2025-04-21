@@ -70,18 +70,38 @@ pub fn load_mcp_servers() -> Result<Vec<McpServerConfig>, String> {
         return Ok(Vec::new());
     }
 
-    let servers: Vec<McpServerConfig> = serde_json::from_str(&content).map_err(|e| {
-        format!(
-            "Error parsing MCP config file {}: {}",
-            config_path.display(),
-            e
-        )
-    })?;
-
-    // Filter out disabled servers
-    let enabled_servers = servers.into_iter().filter(|s| s.enabled).collect();
-
-    Ok(enabled_servers)
+    // First try parsing as a Vec<McpServerConfig> (older format)
+    let servers_vec_result: Result<Vec<McpServerConfig>, _> = serde_json::from_str(&content);
+    
+    if let Ok(servers) = servers_vec_result {
+        // Filter out disabled servers
+        let enabled_servers = servers.into_iter().filter(|s| s.enabled).collect();
+        return Ok(enabled_servers);
+    }
+    
+    // If that fails, try parsing as an object with a "servers" field (newer format)
+    #[derive(serde::Deserialize)]
+    struct ServersContainer {
+        servers: Vec<McpServerConfig>,
+    }
+    
+    let servers_container_result: Result<ServersContainer, _> = serde_json::from_str(&content);
+    
+    match servers_container_result {
+        Ok(container) => {
+            // Filter out disabled servers
+            let enabled_servers = container.servers.into_iter().filter(|s| s.enabled).collect();
+            Ok(enabled_servers)
+        }
+        Err(e) => {
+            // Both parsing attempts failed, return error with original error message
+            Err(format!(
+                "Error parsing MCP config file {}: {}",
+                config_path.display(),
+                e
+            ))
+        }
+    }
 }
 
 #[cfg(test)]

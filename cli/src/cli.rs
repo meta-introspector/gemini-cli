@@ -1,94 +1,31 @@
 use clap::Parser;
+use std::path::PathBuf;
 
-/// Simple CLI to interact with Google Gemini models
+/// Simple CLI client for the HAPPE daemon
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// The prompt to send to the Gemini model (default positional argument)
+    /// The prompt to send to the HAPPE daemon
     #[arg(index = 1)] // Positional argument
     pub prompt: Option<String>,
 
-    /// Prepend prompt with "Provide the Linux command for: "
-    #[arg(short, long, default_value_t = false)]
-    pub command_help: bool,
-
-    /// Enter interactive chat mode with continuous conversation
+    /// Enter interactive chat mode
     #[arg(short, long, default_value_t = false)]
     pub interactive: bool,
 
-    /// Start a task loop with the given description, allowing the AI to work on a task autonomously
-    #[arg(short, long)]
-    pub task: Option<String>,
+    /// Specify the path to the HAPPE daemon IPC socket
+    #[arg(long, env = "HAPPE_IPC_PATH")]
+    pub happe_ipc_path: Option<PathBuf>,
 
-    /// Maximum number of consecutive model turns in auto-continue mode
-    #[arg(long, default_value_t = 5)]
-    pub max_consecutive_turns: u32,
-
-    /// Enable auto-continue mode in interactive chats (model can continue without explicit user input)
-    #[arg(long, default_value_t = true)]
-    pub auto_continue: bool,
-
-    /// Enable progress reporting for tasks (model reports completion percentage)
-    #[arg(long, default_value_t = true)]
-    pub progress_reporting: bool,
-
-    /// Set and save the Gemini API Key persistently
-    #[arg(long)]
-    pub set_api_key: Option<String>,
-
-    /// Set and save the system prompt persistently
-    #[arg(long)]
-    pub set_system_prompt: Option<String>,
-
-    /// Set and save the model name persistently
-    #[arg(long)]
-    pub set_model: Option<String>,
-
-    /// Show the current configuration
-    #[arg(long, default_value_t = false)]
-    pub show_config: bool,
-
-    /// Enable memory-based conversation history (default)
-    #[arg(long, default_value_t = false)]
-    pub enable_history: bool,
-
-    /// Disable conversation history
-    #[arg(long, default_value_t = false)]
-    pub disable_history: bool,
-
-    /// Start a new conversation (don't use previous history)
-    #[arg(long, default_value_t = false)]
-    pub new_chat: bool,
-
-    /// Enable memory broker for enhancing queries with relevant memories (default)
-    #[arg(long, default_value_t = false)]
-    pub enable_memory_broker: bool,
-
-    /// Disable memory broker
-    #[arg(long, default_value_t = false)]
-    pub disable_memory_broker: bool,
-
-    /// Enable automatic memory storage for important information (default)
-    #[arg(long, default_value_t = false)]
-    pub enable_auto_memory: bool,
-
-    /// Disable automatic memory storage
-    #[arg(long, default_value_t = false)]
-    pub disable_auto_memory: bool,
-
-    /// Run in filesystem MCP server mode
+    /// Run in filesystem MCP server mode (Kept for standalone server functionality)
     #[arg(long, default_value_t = false)]
     pub filesystem_mcp: bool,
 
-    /// Run in command MCP server mode
+    /// Run in command MCP server mode (Kept for standalone server functionality)
     #[arg(long, default_value_t = false)]
     pub command_mcp: bool,
 
-    /// Run in memory store MCP server mode
+    /// Run in memory store MCP server mode (Kept for standalone server functionality)
     #[arg(long, default_value_t = false)]
     pub memory_store_mcp: bool,
-
-    /// Set the embedding model variant for semantic memory search (small, base, large)
-    #[arg(long)]
-    pub embedding_model: Option<String>,
 }

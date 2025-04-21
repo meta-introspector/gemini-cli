@@ -2,3 +2,4 @@
 
 pub mod daemon_messages; // For CLI <-> mcp-host communication
 pub mod internal_messages; // For HAPPE <-> IDA communication
+pub mod happe_request;
