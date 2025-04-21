@@ -368,44 +368,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut stdout = BufWriter::new(tokio::io::stdout());
     let mut stdin = BufReader::new(tokio::io::stdin());
 
-    // Send early init response to avoid timeout
-    let server_info = ServerInfo {
-        name: "command-mcp".to_string(),
-        version: "1.0.0".to_string(),
-    };
-
-    let tools = vec![
-        Tool {
-            name: "execute_command".to_string(),
-            description: "Executes a shell command and returns its output".to_string(),
-            schema: None,
-        },
-        Tool {
-            name: "get_environment_variable".to_string(),
-            description: "Gets the value of an environment variable".to_string(),
-            schema: None,
-        },
-    ];
-
-    let capabilities = ServerCapabilities {
-        tools,
-        resources: vec![],
-    };
-
-    let early_response = Response {
-        jsonrpc: "2.0".to_string(),
-        id: json!(3), // Hardcoded ID for early response
-        result: Some(json!({
-            "capabilities": capabilities,
-            "serverInfo": server_info,
-            "status": "initialized"
-        })),
-        error: None,
-    };
-
-    send_response(early_response, &mut stdout).await?;
-    info!("Sent early initialization response");
-
     // Main message processing loop
     let mut shutdown_requested = false;
 

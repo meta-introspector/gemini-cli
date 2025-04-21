@@ -341,7 +341,7 @@ impl UnifiedConfig {
                 e
             ))
         })?;
-        eprintln!("Info: Configuration saved to '{}'", path.display()); // Add confirmation
+        tracing::info!("Configuration saved to '{}'", path.display());
         Ok(())
     }
 
@@ -373,28 +373,20 @@ pub fn get_unified_config_path() -> GeminiResult<PathBuf> {
     // Check for GEMINI_SUITE_CONFIG_PATH environment variable first
     if let Ok(env_path_str) = std::env::var("GEMINI_SUITE_CONFIG_PATH") {
         if !env_path_str.is_empty() {
-            let path = PathBuf::from(&env_path_str); // Borrow env_path_str here
-                                                     // Simple check: does it look like a file path (has a filename component)?
+            let path = PathBuf::from(&env_path_str);
+            // Simple check: does it look like a file path (has a filename component)?
             if path.file_name().is_some() {
                 // Log the path for debugging
-                // eprintln!("Using config path from GEMINI_SUITE_CONFIG_PATH: {}", path.display());
+                // Use tracing instead of eprintln
+                // tracing::debug!("Using config path from GEMINI_SUITE_CONFIG_PATH: {}", path.display());
                 return Ok(path);
             } else {
-                // env_path_str is still valid here
-                eprintln!("Warning: GEMINI_SUITE_CONFIG_PATH ('{}') does not look like a valid file path. Falling back to default.", env_path_str);
+                // Use tracing instead of eprintln
+                tracing::warn!("GEMINI_SUITE_CONFIG_PATH ('{}') does not look like a valid file path. Falling back to default.", env_path_str);
             }
         }
     }
-    // Check for the older GEMINI_CONFIG_DIR environment variable for backward compatibility
-    if let Ok(env_dir) = std::env::var("GEMINI_CONFIG_DIR") {
-        if !env_dir.is_empty() {
-            let path = PathBuf::from(env_dir).join("config.toml");
-            // Log the path for debugging
-            eprintln!("Warning: Using deprecated GEMINI_CONFIG_DIR. Set GEMINI_SUITE_CONFIG_PATH instead. Using path: {}", path.display());
-            return Ok(path);
-        }
-    }
-
+    
     // Otherwise use the default location: ~/.config/gemini-suite/config.toml
     let config_dir = dirs::config_dir()
         .ok_or_else(|| {
@@ -405,7 +397,8 @@ pub fn get_unified_config_path() -> GeminiResult<PathBuf> {
     let config_path = config_dir.join("config.toml");
 
     // Log the path for debugging
-    // eprintln!("Using default config path: {}", config_path.display());
+    // Use tracing instead of eprintln
+    // tracing::debug!("Using default config path: {}", config_path.display());
 
     Ok(config_path)
 }
@@ -478,7 +471,8 @@ pub fn load_mcp_servers(config_path: Option<&Path>) -> GeminiResult<Vec<McpServe
 
     #[derive(serde::Deserialize)]
     struct ClaudeServersConfig {
-        mcpServers: HashMap<String, ClaudeServerConfig>,
+        #[serde(rename = "mcpServers")]
+        mcp_servers: HashMap<String, ClaudeServerConfig>,
     }
 
     let claude_config_result: Result<ClaudeServersConfig, _> = serde_json::from_str(&content);
@@ -486,7 +480,7 @@ pub fn load_mcp_servers(config_path: Option<&Path>) -> GeminiResult<Vec<McpServe
     if let Ok(claude_config) = claude_config_result {
         let mut servers = Vec::new();
 
-        for (name, server) in claude_config.mcpServers {
+        for (name, server) in claude_config.mcp_servers {
             servers.push(McpServerConfig {
                 name,
                 enabled: server.enabled.unwrap_or(true),
@@ -538,11 +532,12 @@ pub fn save_mcp_servers(
 
     #[derive(Serialize)]
     struct ClaudeServersConfig {
-        mcpServers: HashMap<String, ClaudeServer>,
+        #[serde(rename = "mcpServers")]
+        mcp_servers: HashMap<String, ClaudeServer>,
     }
 
     let claude_config = ClaudeServersConfig {
-        mcpServers: claude_servers,
+        mcp_servers: claude_servers,
     };
 
     // Serialize in the Claude-compatible format

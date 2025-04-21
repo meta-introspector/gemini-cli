@@ -277,6 +277,7 @@ async fn handle_request(
     request: Request,
     writer: &mut BufWriter<tokio::io::Stdout>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Use the ID from the incoming request, or null if it's a notification
     let id = request.id.clone().unwrap_or(json!(null));
 
     match request.method.as_str() {
@@ -391,59 +392,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let mut stdout = BufWriter::new(tokio::io::stdout());
     let mut stdin = BufReader::new(tokio::io::stdin());
-
-    // Send early init response to avoid timeout
-    let server_info = ServerInfo {
-        name: "filesystem-mcp".to_string(),
-        version: "1.0.0".to_string(),
-    };
-
-    let tools = vec![
-        Tool {
-            name: "list_directory".to_string(),
-            description: "Lists files in a directory".to_string(),
-            schema: None,
-        },
-        Tool {
-            name: "read_file".to_string(),
-            description: "Reads the content of a file".to_string(),
-            schema: None,
-        },
-        Tool {
-            name: "write_file".to_string(),
-            description: "Writes content to a file".to_string(),
-            schema: None,
-        },
-        Tool {
-            name: "delete_file".to_string(),
-            description: "Deletes a file or directory".to_string(),
-            schema: None,
-        },
-        Tool {
-            name: "get_current_dir".to_string(),
-            description: "Gets the current working directory".to_string(),
-            schema: None,
-        },
-    ];
-
-    let capabilities = ServerCapabilities {
-        tools,
-        resources: vec![],
-    };
-
-    let early_response = Response {
-        jsonrpc: "2.0".to_string(),
-        id: json!(3), // Hardcoded ID for early response
-        result: Some(json!({
-            "capabilities": capabilities,
-            "serverInfo": server_info,
-            "status": "initialized"
-        })),
-        error: None,
-    };
-
-    send_response(early_response, &mut stdout).await?;
-    info!("Sent early initialization response");
 
     // Main message processing loop
     let mut shutdown_requested = false;

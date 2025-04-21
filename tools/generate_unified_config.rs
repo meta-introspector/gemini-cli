@@ -1,12 +1,10 @@
 use gemini_core::config::{
-    get_unified_config_path, DaemonManagerConfig, GeminiApiConfig, HappeConfig, IdaConfig,
-    McpConfig, McpServerConfig, McpTransport, MemoryConfig, UnifiedConfig,
+    get_unified_config_path, McpServerConfig, McpTransport, UnifiedConfig,
 };
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use toml;
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Generating unified configuration file for Gemini Suite...");
@@ -21,36 +19,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Create a unified configuration with sensible defaults
     let mut unified_config = UnifiedConfig::default();
 
+    // --- Set up [gemini-api] defaults --- 
+    // Ensure api_key is None by default, other fields use defaults from GeminiApiConfig::default()
+    unified_config.gemini_api.api_key = None; 
+    // The rest like model_name, system_prompt, etc., inherit from `default()`
+    // --- ---
+
     // Set up CLI config with defaults
     unified_config.cli.log_level = Some("info".to_string());
-    unified_config.cli.happe_ipc_path = Some(PathBuf::from("/tmp/gemini_suite_happe.sock"));
+    // Default socket paths are now resolved at runtime if not set, so remove them here
+    // unified_config.cli.happe_ipc_path = Some(PathBuf::from("/tmp/gemini_suite_happe.sock")); 
     unified_config.cli.history_file_path = Some(
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".config/gemini-suite/history.json"),
+        config_dir.join("history.json") // Place history inside config dir by default
     );
 
     // Set up HAPPE config with defaults
-    if unified_config.happe.ida_socket_path.is_none() {
-        unified_config.happe.ida_socket_path = Some(PathBuf::from("/tmp/gemini_suite_ida.sock"));
-    }
-    if unified_config.happe.happe_socket_path.is_none() {
-        unified_config.happe.happe_socket_path =
-            Some(PathBuf::from("/tmp/gemini_suite_happe.sock"));
-    }
+    // Default socket paths are resolved at runtime if not set
+    // unified_config.happe.ida_socket_path = Some(PathBuf::from("/tmp/gemini_suite_ida.sock")); 
+    // unified_config.happe.happe_socket_path = Some(PathBuf::from("/tmp/gemini_suite_happe.sock")); 
     if unified_config.happe.http_enabled.is_none() {
         unified_config.happe.http_enabled = Some(true);
     }
     if unified_config.happe.http_bind_addr.is_none() {
         unified_config.happe.http_bind_addr = Some("127.0.0.1:8080".to_string());
     }
+    // system_prompt will inherit from [gemini-api] if not overridden here
 
     // Set up IDA config with defaults
-    if unified_config.ida.ida_socket_path.is_none() {
-        unified_config.ida.ida_socket_path = Some(PathBuf::from("/tmp/gemini_suite_ida.sock"));
-    }
+    // unified_config.ida.ida_socket_path = Some(PathBuf::from("/tmp/gemini_suite_ida.sock")); // Resolved at runtime
     if unified_config.ida.memory_db_path.is_none() {
-        unified_config.ida.memory_db_path = Some(config_dir.join("memory/lancedb"));
+        unified_config.ida.memory_db_path = Some(config_dir.join("memory/db")); // Use /db suffix
     }
     if unified_config.ida.max_memory_results.is_none() {
         unified_config.ida.max_memory_results = Some(10);
@@ -60,33 +58,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Set up IDA Memory Broker config defaults
-    if unified_config.ida.memory_broker.provider.is_none() {
-        unified_config.ida.memory_broker.provider = Some("gemini".to_string()); // Default to gemini
-    }
-    // api_key defaults to None implicitly or via struct default
+    // provider defaults to None implicitly
+    // api_key defaults to None implicitly
     if unified_config.ida.memory_broker.model_name.is_none() {
-        unified_config.ida.memory_broker.model_name = Some("gemini-2.0-flash".to_string());
+        // Inherit from gemini_api default if not set
+        unified_config.ida.memory_broker.model_name = unified_config.gemini_api.memory_broker_model.clone(); 
     }
-    // base_url defaults to None implicitly or via struct default
+    // base_url defaults to None implicitly
 
     // Set up Memory config with defaults
     if unified_config.memory.db_path.is_none() {
-        unified_config.memory.db_path = Some(config_dir.join("memory/lancedb"));
+        unified_config.memory.db_path = Some(config_dir.join("memory/db")); // Use /db suffix
     }
     if unified_config.memory.embedding_model_variant.is_none() {
         unified_config.memory.embedding_model_variant = Some("base".to_string());
     }
     if unified_config.memory.embedding_model.is_none() {
-        unified_config.memory.embedding_model = Some("gemini-2.0-flash".to_string());
+        unified_config.memory.embedding_model = Some("e5-small-v2".to_string()); // Use a specific default model
+    }
+    if unified_config.memory.storage_path.is_none() {
+         unified_config.memory.storage_path = Some(config_dir.join("memory/models").to_string_lossy().to_string()); // Models path
     }
 
     // Set up MCP config with defaults
     if unified_config.mcp.mcp_servers_file_path.is_none() {
         unified_config.mcp.mcp_servers_file_path = Some(config_dir.join("mcp_servers.json"));
     }
-    if unified_config.mcp.mcp_host_socket_path.is_none() {
-        unified_config.mcp.mcp_host_socket_path = Some(PathBuf::from("/tmp/gemini_suite_mcp.sock"));
-    }
+    // unified_config.mcp.mcp_host_socket_path = Some(PathBuf::from("/tmp/gemini_suite_mcp.sock")); // Resolved at runtime
 
     // Set up Daemon Manager config with defaults
     if unified_config.daemon_manager.daemon_install_path.is_none() {
@@ -113,12 +111,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             mcp_servers_path
         );
 
-        // Create standard MCP server configurations
+        // Define built-in server commands (use placeholders or actual paths if known)
+        let install_path = unified_config.daemon_manager.daemon_install_path.clone().unwrap_or_default();
+        let fs_cmd = install_path.join("filesystem-mcp").to_string_lossy().to_string();
+        let cmd_cmd = install_path.join("command-mcp").to_string_lossy().to_string();
+        let mem_cmd = install_path.join("memory-store-mcp").to_string_lossy().to_string();
+
+        // Create standard MCP server configurations using Claude-compatible format
         let filesystem_server = McpServerConfig {
             name: "filesystem".to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
-            command: vec!["builtin".to_string()],
+            command: vec![fs_cmd], // Use resolved path
             args: vec![],
             env: {
                 let mut env = HashMap::new();
@@ -132,7 +136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             name: "command".to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
-            command: vec!["builtin".to_string()],
+            command: vec![cmd_cmd], // Use resolved path
             args: vec![],
             env: {
                 let mut env = HashMap::new();
@@ -146,7 +150,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             name: "memory-store".to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
-            command: vec!["builtin".to_string()],
+            command: vec![mem_cmd], // Use resolved path
             args: vec![],
             env: {
                 let mut env = HashMap::new();
@@ -170,11 +174,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     unified_config.save_to_file(&unified_config_path)?;
 
     println!(
-        "Unified configuration file created at {:?}",
+        "Unified configuration file created/updated at {:?}",
         unified_config_path
     );
     println!("The MCP servers configuration is at {:?}", mcp_servers_path);
-    println!("You may need to modify them according to your needs.");
+    println!("You may need to modify them according to your needs, especially the API key.");
 
     Ok(())
 }

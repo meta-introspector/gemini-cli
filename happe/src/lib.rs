@@ -1,4 +1,3 @@
-pub mod config;
 pub mod coordinator;
 pub mod http_server;
 pub mod ida_client;

@@ -1,17 +1,16 @@
 // Use `ida::` to refer to the library crate from the binary
-use ida::{config::IdaConfig, ipc_server, llm_clients};
+use ida::{ipc_server, llm_clients};
 use std::path::PathBuf;
 use clap::Parser;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 
-// Import MCP host for initialization
-use gemini_mcp::host::McpHost;
-use gemini_memory::broker::McpHostInterface; // Trait needed for Arc type
+// Removed MCP host/client imports
+
 use gemini_memory::MemoryStore;
-use gemini_core::config::UnifiedConfig; // Import UnifiedConfig
+use gemini_core::config::UnifiedConfig;
 
 // Define command-line arguments using clap
 #[derive(Parser, Debug)]
@@ -42,8 +41,8 @@ struct Args {
     log_level: String,
 
     #[clap(short, long)]
-    /// Path to the configuration file
-    config: Option<PathBuf>,
+    /// Path to the configuration file (Note: Unified config is loaded by default)
+    config: Option<PathBuf>, // Keep for potential future direct config loading
 }
 
 #[tokio::main]
@@ -61,24 +60,29 @@ async fn main() -> Result<()> {
     // Load Unified Configuration
     let unified_config = UnifiedConfig::load(); // Load the unified config
 
-    // Use IDA specific config from UnifiedConfig or defaults
-    let config = unified_config.ida.unwrap_or_default();
+    // Access IDA specific config directly from UnifiedConfig
+    let config = unified_config.ida; // Assuming unified_config.ida is IdaConfig
 
-    // Resolve the memory DB path to be absolute using the unified config's helper
-    let resolved_db_path = unified_config.resolve_path(&config.memory_db_path, Some("memory/db"), true)
-        .context("Failed to resolve memory database path")?;
-    info!("Resolved memory DB path: {}", resolved_db_path.display());
+    // Resolve memory DB path: Use path from config if present, otherwise use default
+    let resolved_db_path = match config.memory_db_path.clone() {
+        Some(path) => path,
+        None => {
+            // Determine default path based on user config or data dir
+            let base_dir = dirs::config_dir()
+                .or_else(dirs::data_local_dir)
+                .ok_or_else(|| anyhow!("Could not determine config or local data directory"))?;
+            base_dir.join("gemini-suite/memory/db")
+        }
+    };
 
-    // Initialize MCP Host (required by MemoryStore for embeddings)
-    // Get MCP socket path from unified config
-    let mcp_socket_path = unified_config.resolve_mcp_host_socket_path()
-        .context("Failed to determine MCP host socket path from config")?;
+    info!("Using memory DB path: {}", resolved_db_path.display());
+    // Ensure the directory exists
+    if let Some(parent) = resolved_db_path.parent() {
+        std::fs::create_dir_all(parent)
+            .context(format!("Failed to create directory for memory DB at {}", parent.display()))?;
+    }
 
-    let mcp_host = McpHost::new(mcp_socket_path).await
-        .map_err(|e| anyhow!("Failed to create MCP Host: {}", e)) // Map String error to anyhow::Error
-        .context("Failed to initialize MCP Host client for IDA")?;
-    let mcp_host_interface: Arc<dyn McpHostInterface + Send + Sync> = Arc::new(mcp_host);
-    info!("MCP Host interface initialized.");
+    // ---- Removed MCP Host/Client Initialization ----
 
     // Initialize MemoryStore
     info!("Initializing MemoryStore at {}", resolved_db_path.display());
@@ -86,7 +90,7 @@ async fn main() -> Result<()> {
         MemoryStore::new(
             Some(resolved_db_path.clone()), // Use resolved path
             None, // Use default embedding model variant from MemoryStore defaults for now
-            Some(mcp_host_interface.clone()), // Provide the MCP interface
+            None, // Pass None for McpHostInterface
         )
         .await
         .context("Failed to initialize MemoryStore")?,
@@ -105,11 +109,13 @@ async fn main() -> Result<()> {
     // Start the IPC server, passing all components
     info!("Starting IPC server...");
     if let Err(e) = ipc_server::run_server(
-        config.clone(), // Pass the full loaded config
-        memory_store, 
-        Some(mcp_host_interface), // Pass the MCP interface
-        llm_client, // Pass the optional LLM client
-    ).await {
+        config.clone(), // Pass the IDA config (still gemini_core::IdaConfig type)
+        memory_store,
+        None, // Pass None for McpHostInterface here too, if needed by run_server signature
+        llm_client,
+    )
+    .await
+    {
         error!("IDA Daemon failed: {}", e);
         return Err(e.into());
     }

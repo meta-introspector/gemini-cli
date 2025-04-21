@@ -1,8 +1,8 @@
-use crate::config::AppConfig;
 use crate::coordinator;
 use crate::mcp_client::McpHostClient;
-use crate::session::{InMemorySessionStore, Session, SessionStore, SessionStoreRef};
+use crate::session::{InMemorySessionStore, Session, SessionStoreRef};
 use anyhow::Result;
+use gemini_core::config::HappeConfig;
 use gemini_core::client::GeminiClient;
 use gemini_ipc::happe_request::{HappeQueryRequest, HappeQueryResponse};
 use gemini_ipc::internal_messages::ConversationTurn;
@@ -16,7 +16,7 @@ use chrono::{Duration, Utc};
 
 /// Shared state for the IPC server
 pub struct IpcServerState {
-    config: AppConfig,
+    config: Arc<HappeConfig>,
     gemini_client: Arc<GeminiClient>,
     mcp_client: Arc<McpHostClient>,
     session_store: SessionStoreRef,
@@ -25,7 +25,7 @@ pub struct IpcServerState {
 /// Run the IPC server
 pub async fn run_server(
     socket_path: impl AsRef<Path>,
-    config: AppConfig,
+    config: HappeConfig,
     gemini_client: GeminiClient,
     mcp_client: McpHostClient,
 ) -> Result<()> {
@@ -45,7 +45,7 @@ pub async fn run_server(
 
     // Create shared state
     let state = Arc::new(IpcServerState {
-        config,
+        config: Arc::new(config),
         gemini_client: Arc::new(gemini_client),
         mcp_client: Arc::new(mcp_client),
         session_store,

@@ -1,7 +1,6 @@
 use clap::Parser;
 use gemini_core::client::GeminiClient;
 use gemini_core::config::UnifiedConfig;
-use gemini_happe::config::AppConfig;
 use gemini_happe::http_server;
 use gemini_happe::ipc_server;
 use gemini_happe::mcp_client::McpHostClient;
@@ -67,79 +66,52 @@ async fn main() -> anyhow::Result<()> {
     // Parse command line args
     let args = Args::parse();
 
-    // Load config from unified configuration
-    let mut config = if let Some(custom_config_path) = &args.config {
-        // Legacy support for custom config file path
-        match std::fs::read_to_string(custom_config_path) {
-            Ok(content) => match toml::from_str::<UnifiedConfig>(&content) {
-                Ok(unified_config) => {
-                    info!(
-                        "Loaded unified configuration from custom path: {}",
-                        custom_config_path.display()
-                    );
-                    AppConfig::from_unified_config(&unified_config)
-                }
-                Err(e) => {
-                    error!("Failed to parse custom config as unified config: {}", e);
-                    return Err(anyhow::anyhow!("Configuration parse error: {}", e));
-                }
-            },
-            Err(e) => {
-                error!(
-                    "Failed to read custom config file {}: {}",
-                    custom_config_path.display(),
-                    e
-                );
-                return Err(anyhow::anyhow!("Failed to read config file: {}", e));
-            }
-        }
-    } else {
-        // Use unified config
-        match AppConfig::load() {
-            Ok(cfg) => {
-                info!("Loaded unified configuration");
-                cfg
-            }
-            Err(e) => {
-                error!("Failed to load unified configuration: {}", e);
-                return Err(anyhow::anyhow!("Configuration error: {}", e));
-            }
-        }
-    };
+    // --- Load Unified Configuration --- 
+    let unified_config = UnifiedConfig::load(); // Load the single source of truth
+    // --- --- 
 
-    // Update config from CLI args (these take precedence over config file)
+    // --- Extract HAPPE specific settings, applying CLI overrides --- 
+    // Start with HAPPE config from unified structure (it's not an Option)
+    let mut config = unified_config.happe; // Removed .unwrap_or_default()
+
+    // Override with CLI args if provided
     if let Some(ida_socket) = args.ida_socket {
-        config.ida_socket_path = ida_socket;
+        config.ida_socket_path = Some(ida_socket);
     }
-
     if let Some(system_prompt) = args.system_prompt {
-        config.system_prompt = system_prompt;
+        config.system_prompt = Some(system_prompt);
     }
-
     if let Some(happe_socket) = args.happe_socket {
-        config.happe_socket_path = happe_socket;
+        config.happe_socket_path = Some(happe_socket);
     }
-
     if let Some(http_addr) = args.http_addr {
-        config.http_bind_addr = http_addr.to_string();
-        config.http_enabled = true;
+        config.http_bind_addr = Some(http_addr.to_string());
+        config.http_enabled = Some(true);
     }
-
     if args.no_http {
-        config.http_enabled = false;
+        config.http_enabled = Some(false);
     }
+    // --- --- 
 
-    // Update Gemini config
+    // --- Extract Gemini settings from unified config, applying CLI overrides --- 
+    let mut gemini_config = unified_config.gemini_api; // Removed .unwrap_or_default()
     if let Some(api_key) = args.api_key {
-        config.gemini.api_key = Some(api_key);
+        gemini_config.api_key = Some(api_key);
     }
-
     if let Some(model) = args.model {
-        config.gemini.model_name = Some(model);
+        gemini_config.model_name = Some(model);
     }
+    // --- --- 
 
-    // Initialize Gemini client
-    let gemini_client = match GeminiClient::new(config.gemini.clone()) {
+    // --- Extract MCP settings from unified config, applying CLI overrides --- 
+    let mut mcp_config = unified_config.mcp; // Removed .unwrap_or_default()
+    if let Some(mcp_socket) = args.mcp_socket {
+        mcp_config.mcp_host_socket_path = Some(mcp_socket);
+    }
+    // --- --- 
+
+    // Initialize Gemini client using the resolved Gemini config
+    let gemini_client = match GeminiClient::new(gemini_config) { // Pass the resolved gemini_config
         Ok(client) => {
             info!("Initialized Gemini client");
             client
@@ -150,11 +122,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Initialize MCP host client
-    let mcp_socket_path = args
-        .mcp_socket
-        .or_else(|| config.mcp.mcp_host_socket_path.clone())
-        .unwrap_or_else(|| McpHostClient::get_default_socket_path());
+    // Initialize MCP host client using the resolved MCP config
+    let mcp_socket_path = mcp_config
+        .mcp_host_socket_path
+        .ok_or_else(|| anyhow::anyhow!("MCP Host socket path not configured"))?;
 
     info!(
         "Using MCP host daemon socket at {}",
@@ -184,14 +155,14 @@ async fn main() -> anyhow::Result<()> {
     let mut tasks = Vec::new();
 
     // Start HTTP server if enabled
-    if !args.no_ipc && config.http_enabled {
+    if config.http_enabled.unwrap_or(false) { // Handle Option<bool>
         let http_config = config.clone();
         let http_client = gemini_client.clone();
         let http_mcp_client = mcp_client.clone();
-        let http_addr: SocketAddr = config
-            .http_bind_addr
+        let http_addr_str = config.http_bind_addr.clone().unwrap_or_else(|| "127.0.0.1:3000".to_string());
+        let http_addr: SocketAddr = http_addr_str
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid HTTP address: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid HTTP address '{}': {}", http_addr_str, e))?;
 
         tasks.push(tokio::spawn(async move {
             if let Err(e) =
@@ -204,14 +175,17 @@ async fn main() -> anyhow::Result<()> {
 
     // Start IPC server if enabled
     if !args.no_ipc {
-        let ipc_config = config.clone();
+        let ipc_config = config.clone(); // Clone HAPPE config
         let ipc_client = gemini_client.clone();
         let ipc_mcp_client = mcp_client.clone();
-        let ipc_socket = config.happe_socket_path.clone();
+        let ipc_socket_path = config
+            .happe_socket_path
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("HAPPE IPC socket path not configured"))?;
 
         tasks.push(tokio::spawn(async move {
             if let Err(e) =
-                ipc_server::run_server(ipc_socket, ipc_config, ipc_client, ipc_mcp_client).await
+                ipc_server::run_server(ipc_socket_path, ipc_config, ipc_client, ipc_mcp_client).await
             {
                 error!(error = %e, "IPC server failed");
             }

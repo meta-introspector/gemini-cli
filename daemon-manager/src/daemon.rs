@@ -236,11 +236,52 @@ fn kill_process(pid: i32) -> Result<()> {
     }
 }
 
+// Helper function to get the binary name for a daemon
+fn get_daemon_binary_name(name: &str) -> Result<&str> {
+    match name {
+        "happe" => Ok("happe-daemon"),
+        "ida" => Ok("ida-daemon"),
+        "mcp-hostd" => Ok("mcp-hostd"),
+        _ => Err(anyhow!("Unknown daemon name: {}", name)),
+    }
+}
+
+// Helper function to find PID using pgrep
+fn find_pid_by_name(binary_name: &str) -> Result<Option<i32>> {
+    let output = Command::new("pgrep")
+        .arg("-f") // Match against full argument list
+        .arg(binary_name)
+        .output()
+        .context("Failed to execute pgrep command")?;
+
+    if output.status.success() {
+        let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // pgrep might return multiple PIDs, take the first one
+        if let Some(first_pid_str) = pid_str.lines().next() {
+            let pid = first_pid_str.parse::<i32>().with_context(|| {
+                format!("Failed to parse PID '{}' from pgrep output", first_pid_str)
+            })?;
+            Ok(Some(pid))
+        } else {
+            Ok(None) // pgrep succeeded but output was empty
+        }
+    } else {
+        Ok(None) // pgrep failed (process not found)
+    }
+}
+
 // Start a daemon
 pub async fn start_daemon(name: &str) -> Result<()> {
     validate_daemon_name(name)?;
 
     let service_name = get_service_name(name);
+
+    // Check status first to avoid starting if already running
+    let current_status = check_daemon_status(name).await?;
+    if current_status == DaemonStatus::Running {
+        tracing::info!("Daemon {} is already running.", name);
+        return Ok(());
+    }
 
     // Check if systemd service is installed
     if is_systemd_service_installed(&service_name)? {
@@ -254,6 +295,7 @@ pub async fn start_daemon(name: &str) -> Result<()> {
         if !status.success() {
             return Err(anyhow!("Failed to start daemon {} via systemd", name));
         }
+        tracing::info!("Started daemon {} via systemd.", name);
     } else {
         // Start manually
         tracing::debug!("Starting daemon {} manually", name);
@@ -270,8 +312,12 @@ pub async fn start_daemon(name: &str) -> Result<()> {
             tracing::info!("Created configuration directory: {}", config_dir.display());
         }
 
+        // Get runtime directory for PID file
+        let runtime_dir = get_runtime_dir()?;
+        let pid_file_path = runtime_dir.join(format!("{}.pid", name));
+
         // Create logs directory if it doesn't exist
-        let logs_dir = get_runtime_dir()?.join("gemini-suite-logs");
+        let logs_dir = runtime_dir.join("gemini-suite-logs");
         if !logs_dir.exists() {
             fs::create_dir_all(&logs_dir).context("Failed to create logs directory")?;
             tracing::info!("Created logs directory: {}", logs_dir.display());
@@ -289,11 +335,13 @@ pub async fn start_daemon(name: &str) -> Result<()> {
             _ => vec![],
         };
 
-        // Set environment variables
+        // Set environment variable for unified config path
+        let config_file_path = config_dir.join("config.toml");
+
         let mut cmd = Command::new(binary_path);
         cmd.args(&args)
             .current_dir(&config_dir)
-            .env("GEMINI_CONFIG_DIR", &config_dir)
+            .env("GEMINI_SUITE_CONFIG_PATH", &config_file_path) // Use the correct env var
             .env("RUST_LOG", "debug") // Set RUST_LOG=debug for verbose logging
             .stdout(std::fs::File::create(&log_file).context("Failed to create log file")?)
             .stderr(std::fs::File::create(&log_file).context("Failed to create log file")?);
@@ -303,7 +351,14 @@ pub async fn start_daemon(name: &str) -> Result<()> {
             .spawn()
             .with_context(|| format!("Failed to start daemon {}", name))?;
 
-        tracing::debug!("Started {} with PID {}", name, child.id());
+        let pid = child.id() as i32;
+        tracing::debug!("Started {} manually with PID {}", name, pid);
+
+        // Write PID to file
+        fs::write(&pid_file_path, pid.to_string())
+            .with_context(|| format!("Failed to write PID file: {}", pid_file_path.display()))?;
+        tracing::debug!("Wrote PID {} to file {}", pid, pid_file_path.display());
+        tracing::info!("Started daemon {} manually.", name);
     }
 
     Ok(())
@@ -314,6 +369,7 @@ pub async fn stop_daemon(name: &str) -> Result<()> {
     validate_daemon_name(name)?;
 
     let service_name = get_service_name(name);
+    let binary_name = get_daemon_binary_name(name)?;
 
     // Check if systemd service is installed
     if is_systemd_service_installed(&service_name)? {
@@ -328,68 +384,108 @@ pub async fn stop_daemon(name: &str) -> Result<()> {
             return Err(anyhow!("Failed to stop daemon {} via systemd", name));
         }
     } else {
-        // Stop manually (find PID and kill process)
+        // Stop manually: Try PID file first, then pgrep
         tracing::debug!("Stopping daemon {} manually", name);
-
-        // Get runtime directory
         let runtime_dir = get_runtime_dir()?;
-        let pid_file = runtime_dir.join(format!("{}.pid", name));
+        let pid_file = runtime_dir.join(format!("{}.pid", name)); // Use simple name for pid file
 
-        if !pid_file.exists() {
-            tracing::warn!("No PID file found for daemon {}. Is it running?", name);
-            return Ok(());
-        }
+        let mut pid_to_kill: Option<i32> = None;
 
-        // Read PID
-        let pid_str = fs::read_to_string(&pid_file)
-            .with_context(|| format!("Failed to read PID file: {}", pid_file.display()))?;
-        let pid = pid_str
-            .trim()
-            .parse::<i32>()
-            .with_context(|| format!("Failed to parse PID from file: {}", pid_file.display()))?;
-
-        // Send SIGTERM
-        tracing::debug!("Sending SIGTERM to process with PID: {}", pid);
-
-        // Check if process exists before trying to kill it
-        if !process_exists(pid) {
-            tracing::warn!(
-                "Process with PID {} does not exist. Removing stale PID file.",
-                pid
-            );
-            // Clean up stale PID file
-            fs::remove_file(&pid_file).with_context(|| {
-                format!("Failed to remove stale PID file: {}", pid_file.display())
-            })?;
-            return Ok(());
-        }
-
-        // Kill process
-        match kill_process(pid) {
-            Ok(_) => {
-                tracing::debug!("SIGTERM sent successfully to process {}", pid);
-                // Clean up PID file
-                fs::remove_file(&pid_file).with_context(|| {
-                    format!("Failed to remove PID file: {}", pid_file.display())
-                })?;
-
-                // Show message about viewing logs
-                let logs_dir = runtime_dir.join("gemini-suite-logs");
-                let log_file = logs_dir.join(format!("{}.log", name));
-                if log_file.exists() {
-                    tracing::info!("Daemon logs available at: {}", log_file.display());
-                    tracing::info!("View them with: cat {}", log_file.display());
+        // 1. Try reading PID from file
+        if pid_file.exists() {
+            match fs::read_to_string(&pid_file) {
+                Ok(pid_str) => match pid_str.trim().parse::<i32>() {
+                    Ok(pid) => {
+                        if process_exists(pid) {
+                            tracing::debug!("Found running process PID {} from file {}", pid, pid_file.display());
+                            pid_to_kill = Some(pid);
+                        } else {
+                            tracing::warn!("Stale PID file found: {}. Process {} not running. Removing file.", pid_file.display(), pid);
+                            let _ = fs::remove_file(&pid_file); // Ignore error on removal
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse PID from file {}: {}. Ignoring file.",
+                            pid_file.display(),
+                            e
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to read PID file {}: {}. Ignoring file.",
+                        pid_file.display(),
+                        e
+                    );
                 }
             }
-            Err(e) => {
-                tracing::error!("Failed to send SIGTERM to process {}: {}", pid, e);
-                return Err(anyhow!(
-                    "Failed to stop daemon {} (PID: {}): {}",
-                    name,
-                    pid,
-                    e
-                ));
+        }
+
+        // 2. If PID not found via file, try pgrep
+        if pid_to_kill.is_none() {
+            tracing::debug!(
+                "PID file for {} not found or invalid, attempting pgrep with binary name: {}",
+                name,
+                binary_name
+            );
+            match find_pid_by_name(binary_name)? {
+                Some(pid) => {
+                    tracing::info!("Found running process PID {} using pgrep for {}", pid, binary_name);
+                    pid_to_kill = Some(pid);
+                }
+                None => {
+                    tracing::info!(
+                        "Daemon {} process not found using pgrep either. Assuming stopped.",
+                        name
+                    );
+                    return Ok(()); // Daemon not running
+                }
             }
+        }
+
+        // 3. Attempt to stop the process using the found PID
+        if let Some(pid) = pid_to_kill {
+            tracing::debug!("Attempting to stop process with PID: {}", pid);
+            // Send SIGTERM first
+            match kill_process(pid) {
+                Ok(_) => {
+                    tracing::debug!("SIGTERM sent successfully to process {}", pid);
+                    // Optional: Wait briefly and check if process stopped, then send SIGKILL if needed
+                    // For simplicity now, we assume SIGTERM works.
+
+                    // Clean up PID file if it existed and we stopped the process from it
+                    if pid_file.exists() {
+                        if let Ok(pid_str) = fs::read_to_string(&pid_file) {
+                            if pid_str.trim().parse::<i32>() == Ok(pid) {
+                                if let Err(e) = fs::remove_file(&pid_file) {
+                                    tracing::warn!("Failed to remove PID file {}: {}", pid_file.display(), e);
+                                }
+                            }
+                        }
+                    }
+
+                    // Show message about viewing logs
+                    let logs_dir = runtime_dir.join("gemini-suite-logs");
+                    let log_file = logs_dir.join(format!("{}.log", name)); // Log file uses simple name
+                    if log_file.exists() {
+                        tracing::info!("Daemon logs available at: {}", log_file.display());
+                        // tracing::info!("View them with: cat {}", log_file.display());
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to send SIGTERM to process {}: {}", pid, e);
+                    return Err(anyhow!(
+                        "Failed to stop daemon {} (PID: {}): {}",
+                        name,
+                        pid,
+                        e
+                    ));
+                }
+            }
+        } else {
+             // Should not happen if pgrep was attempted, but handle defensively
+             tracing::warn!("Could not determine PID for daemon {}. Assuming stopped.", name);
         }
     }
 
@@ -521,7 +617,7 @@ pub async fn install_daemon(name: &str) -> Result<()> {
 
     fs::create_dir_all(&systemd_dir).context("Failed to create systemd user directory")?;
 
-    // Load API key from the unified config if it exists
+    // Load API key from the unified config if it exists (specifically for happe)
     let api_key_args = if name == "happe" {
         // Try to load the API key from unified config
         let config_path = config_dir.join("config.toml");
@@ -531,9 +627,9 @@ pub async fn install_daemon(name: &str) -> Result<()> {
                 Ok(content) => {
                     match toml::from_str::<toml::Value>(&content) {
                         Ok(config) => {
-                            // Extract API key from [gemini] section if it exists
+                            // Extract API key from [gemini-api] section (the correct section)
                             let api_key = config
-                                .get("gemini")
+                                .get("gemini-api") // Use the correct table name
                                 .and_then(|g| g.get("api_key"))
                                 .and_then(|k| k.as_str())
                                 .unwrap_or("");
@@ -542,7 +638,7 @@ pub async fn install_daemon(name: &str) -> Result<()> {
                                 format!(" -k {}", api_key)
                             } else {
                                 // No API key found, warn the user
-                                tracing::warn!("No API key found in config.toml for {}", name);
+                                tracing::warn!("No API key found in [gemini-api] section of config.toml for {}", name);
                                 String::new()
                             }
                         }
@@ -566,8 +662,9 @@ pub async fn install_daemon(name: &str) -> Result<()> {
         String::new()
     };
 
-    // Set environment variable for config directory
-    let env_vars = format!("Environment=GEMINI_CONFIG_DIR={}", config_dir.display());
+    // Set environment variable for config path (should point to the file)
+    let config_file_path = config_dir.join("config.toml");
+    let env_vars = format!("Environment=GEMINI_SUITE_CONFIG_PATH={}", config_file_path.display());
 
     // Create systemd service file
     let service_content = match name {

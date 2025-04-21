@@ -1,6 +1,6 @@
-use crate::config::IdaConfig;
 use crate::llm_clients::LLMClient;
 use crate::{memory_mcp_client, storage};
+use gemini_core::config::IdaConfig;
 use gemini_ipc::internal_messages::InternalMessage;
 use gemini_memory::broker::McpHostInterface;
 use gemini_memory::MemoryStore;
@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, instrument, warn};
+use anyhow::anyhow;
 
 /// Configuration for the IDA daemon
 #[derive(Debug, Clone)]
@@ -54,14 +55,18 @@ impl std::fmt::Debug for ServerState {
     }
 }
 
-#[instrument(skip(config, memory_store, mcp_host, llm_client))]
+#[instrument(skip(memory_store, mcp_host, llm_client))]
 pub async fn run_server(
     config: IdaConfig,
     memory_store: Arc<MemoryStore>,
     mcp_host: Option<Arc<dyn McpHostInterface + Send + Sync>>,
     llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
 ) -> Result<(), ServerError> {
-    let ipc_path = Path::new(&config.ida_socket_path);
+    let ipc_path_str = config
+        .ida_socket_path
+        .clone()
+        .ok_or_else(|| ServerError::Anyhow(anyhow!("IDA socket path not configured")))?;
+    let ipc_path = Path::new(&ipc_path_str);
 
     // Clean up existing socket file if it exists
     if ipc_path.exists() {
@@ -162,11 +167,14 @@ async fn handle_connection(
             } => {
                 info!("Processing GetMemoriesRequest for query: {}", query);
 
+                // Use max_memory_results from config, providing a default
+                let max_results = state.config.max_memory_results.unwrap_or(5);
+
                 // Use the real memory retrieval function
                 let memories = memory_mcp_client::retrieve_memories(
                     &query,
                     state.memory_store.clone(),
-                    state.config.max_memory_results,
+                    max_results, // Use the resolved value
                     &state.llm_client,
                     conversation_context,
                 )

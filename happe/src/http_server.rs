@@ -1,7 +1,7 @@
-use crate::config::AppConfig;
 use crate::coordinator;
 use crate::mcp_client::McpHostClient;
-use crate::session::{InMemorySessionStore, Session, SessionStore, SessionStoreRef};
+use gemini_core::config::HappeConfig;
+use crate::session::{InMemorySessionStore, Session, SessionStoreRef};
 use axum::{
     extract::{Extension, State},
     http::{HeaderMap, StatusCode},
@@ -22,7 +22,7 @@ use uuid::Uuid;
 /// Application state shared with all routes
 #[derive(Clone)]
 pub struct AppState {
-    config: Arc<AppConfig>,
+    config: Arc<HappeConfig>,
     gemini_client: Arc<GeminiClient>,
     mcp_client: Arc<McpHostClient>,
     session_store: SessionStoreRef,
@@ -79,7 +79,7 @@ impl IntoResponse for ApiError {
 
 /// Start the HTTP server
 pub async fn run_server(
-    config: AppConfig,
+    config: HappeConfig,
     gemini_client: GeminiClient,
     mcp_client: McpHostClient,
     addr: SocketAddr,

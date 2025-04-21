@@ -1,18 +1,18 @@
-use crate::config::AppConfig;
 use crate::ida_client::IdaClient;
 use crate::llm_client;
 use crate::mcp_client::{self, McpHostClient};
-use crate::session::{Session, SessionStore, SessionStoreError};
+use crate::session::Session;
 use anyhow::{anyhow, Result};
 use gemini_core::client::GeminiClient;
 use gemini_core::types::{Content, Part};
 use gemini_ipc::internal_messages::{ConversationTurn, MemoryItem};
 use gemini_mcp::gemini::build_mcp_system_prompt;
 use tracing::{debug, error, info, warn};
+use gemini_core::config::HappeConfig;
 
 /// Process a single query from the user
 pub async fn process_query(
-    config: &AppConfig,
+    config: &HappeConfig,
     mcp_client: &McpHostClient,
     gemini_client: &GeminiClient,
     session: &Session,
@@ -25,8 +25,13 @@ pub async fn process_query(
     let conversation_context = extract_conversation_context(&history, 3);
     
     // Get relevant memories from IDA
-    let ida_socket_path = config.ida_socket_path.to_str().unwrap_or("/tmp/gemini_suite_ida.sock");
-    let memories = match IdaClient::get_memories(ida_socket_path, &query, conversation_context).await {
+    let ida_socket_path_str = config
+        .ida_socket_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "/tmp/gemini_suite_ida.sock".to_string());
+        
+    let memories = match IdaClient::get_memories(&ida_socket_path_str, &query, conversation_context).await {
         Ok(mem) => {
             info!(count = mem.len(), "Retrieved memories from IDA");
             mem
@@ -58,7 +63,8 @@ pub async fn process_query(
     };
 
     // 3. Construct prompt with memories
-    let system_prompt = format!("{}\n{}", config.system_prompt, mcp_capabilities_prompt);
+    let base_system_prompt = config.system_prompt.as_deref().unwrap_or("You are a helpful assistant.");
+    let system_prompt = format!("{}\n{}", base_system_prompt, mcp_capabilities_prompt);
 
     // Construct the prompt content including memories
     let contents = construct_prompt(&query, &memories);
@@ -91,7 +97,7 @@ pub async fn process_query(
 
     // Use the static method to store the turn
     if let Err(e) = IdaClient::store_turn_async(
-        config.ida_socket_path.to_str().unwrap_or_default(),
+        &ida_socket_path_str,
         turn_data.clone(),
     )
     .await

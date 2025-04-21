@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
-use crate::config::MemoryBrokerConfig;
+use gemini_core::config::MemoryBrokerConfig;
 
 /// Common trait for all LLM clients
 #[async_trait]

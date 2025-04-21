@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
-use toml;
 use toml::Table;
 
 #[derive(Parser)]
@@ -80,7 +79,6 @@ enum Commands {
 struct DaemonInfo {
     name: String,
     bin_name: String,
-    function_name: String,
     description: String,
 }
 
@@ -415,19 +413,16 @@ fn main() -> Result<()> {
         DaemonInfo {
             name: "MCP Host Daemon".to_string(),
             bin_name: "mcp-hostd".to_string(),
-            function_name: "mcpd".to_string(),
             description: "MCP Host Daemon for handling tool calls".to_string(),
         },
         DaemonInfo {
             name: "HAPPE Daemon".to_string(),
             bin_name: "happe-daemon".to_string(),
-            function_name: "happed".to_string(),
             description: "Host Application Environment Daemon".to_string(),
         },
         DaemonInfo {
             name: "IDA Daemon".to_string(),
             bin_name: "ida-daemon".to_string(),
-            function_name: "idad".to_string(),
             description: "Internal Dialogue App Daemon".to_string(),
         },
     ];
@@ -536,9 +531,6 @@ fn install_all(
     // Create shell wrappers
     if create_shell_wrappers {
         create_cli_wrapper(install_dir, config_dir)?;
-        for daemon in daemons {
-            create_daemon_wrapper(daemon, install_dir, config_dir)?;
-        }
     }
 
     // Install unified configuration (will also create mcp_servers.json)
@@ -548,16 +540,15 @@ fn install_all(
     info!("Checking configuration values...");
     check_and_prompt_for_config_value(
         &config_dir.join("config.toml"),
-        &["gemini", "api_key"],
+        &["gemini-api", "api_key"],
         "Enter your Gemini API Key:",
     )?;
     info!("Configuration checks complete.");
 
     info!("Installation complete!");
     info!("For CLI usage, reload your shell and type: gemini \"your prompt\"");
-    info!("Daemons can be managed with: mcpd, happed, idad commands");
     if install_manager_tool {
-        info!("Or manage everything with: gemini-manager <command>");
+        info!("Manage daemons and servers with: gemini-manager <command>");
     }
 
     Ok(())
@@ -731,7 +722,7 @@ gemini() {{
     fi
 
     # Set the config directory environment variable
-    export GEMINI_CONFIG_DIR="$config_dir"
+    export GEMINI_SUITE_CONFIG_PATH="$config_dir/config.toml"
 
     # Simply execute the binary with all arguments passed to the function
     # Pass the GEMINI_SESSION_ID environment variable implicitly
@@ -752,227 +743,6 @@ gemini() {{
         shell_config_path.display()
     );
     println!("You'll need to restart your shell or run 'source {}' to use it", shell_config_path.display());
-
-    Ok(())
-}
-
-fn create_daemon_wrapper(daemon: &DaemonInfo, install_dir: &Path, config_dir: &Path) -> Result<()> {
-    info!("Creating {} wrapper function ({})...", daemon.function_name, daemon.description);
-
-    let shell_config_path = get_shell_config_path()?;
-    let daemon_bin_path = install_dir.join(&daemon.bin_name);
-
-    // Define markers
-    let start_marker = format!(
-        "# {} Management Function Start",
-        daemon.function_name.to_uppercase()
-    );
-    let end_marker = format!(
-        "# {} Management Function End",
-        daemon.function_name.to_uppercase()
-    );
-
-    // Check if wrapper already exists
-    if shell_config_exists_with_pattern(&shell_config_path, &start_marker)? {
-        remove_shell_function(&shell_config_path, &start_marker, &end_marker)?;
-    }
-
-    // Create the runtime directory path
-    let runtime_dir = format!("${{XDG_RUNTIME_DIR:-$HOME/.local/share}}/gemini-suite");
-
-    let wrapper_content = format!(
-        r#"
-{start_marker}
-# Function to manage the {bin_name} daemon
-{function_name}() {{
-    local _DAEMON_BIN='{daemon_path}'
-    local _DAEMON_CONFIG_DIR='{config_dir}'
-    local _DAEMON_RUNTIME_DIR='{runtime_dir}'
-    local _DAEMON_PID_FILE="$_DAEMON_RUNTIME_DIR/{bin_name}.pid"
-    local _DAEMON_LOG_FILE="$_DAEMON_RUNTIME_DIR/{bin_name}.log"
-    local _DAEMON_SOCKET_PATH="$_DAEMON_RUNTIME_DIR/{bin_name}.sock"
-
-    # Colors for terminal output
-    local GREEN='\033[0;32m'
-    local YELLOW='\033[1;33m'
-    local RED='\033[0;31m'
-    local BLUE='\033[0;34m'
-    local NC='\033[0m' # No Color
-
-    # Ensure runtime directory exists
-    mkdir -p "$_DAEMON_RUNTIME_DIR"
-
-    _daemon_get_pid() {{
-        if [ -f "$_DAEMON_PID_FILE" ]; then
-            cat "$_DAEMON_PID_FILE"
-        else
-            echo ""
-        fi
-    }}
-
-    _daemon_is_running() {{
-        local pid=$(_daemon_get_pid)
-        if [ -z "$pid" ]; then
-            return 1 # Not running (no PID file)
-        fi
-        # Check if the process exists
-        if ps -p $pid > /dev/null; then
-            return 0 # Running (process exists)
-        else
-            # Process doesn't exist, cleanup stale PID file
-            echo "${{YELLOW}}Warning: Stale PID file found ($_DAEMON_PID_FILE). Cleaning up.${{NC}}" >&2
-            rm -f "$_DAEMON_PID_FILE"
-            return 1 # Not running
-        fi
-    }}
-
-    _daemon_start() {{
-        if _daemon_is_running; then
-            echo "${{YELLOW}}Daemon is already running (PID: $(_daemon_get_pid)).${{NC}}"
-            return 1
-        fi
-
-        if [ ! -x "$_DAEMON_BIN" ]; then
-            echo "${{RED}}Error: Daemon binary not found or not executable at $_DAEMON_BIN${{NC}}" >&2
-            return 1
-        fi
-
-        echo "${{BLUE}}Starting {bin_name} daemon...${{NC}}"
-        # Set config directory environment variable before starting
-        export GEMINI_CONFIG_DIR="$_DAEMON_CONFIG_DIR"
-        
-        # Start in background, redirect stdout/stderr to log file
-        "$_DAEMON_BIN" --config "$_DAEMON_CONFIG_DIR/config.toml" &> "$_DAEMON_LOG_FILE" & 
-        local pid=$!
-        echo $pid > "$_DAEMON_PID_FILE"
-        sleep 1 # Give it a moment to start
-        if _daemon_is_running; then
-            echo "${{GREEN}}Daemon started successfully (PID: $pid).${{NC}}"
-            echo "  Log file: $_DAEMON_LOG_FILE"
-            return 0
-        else
-            echo "${{RED}}Error: Failed to start the daemon. Check logs:${{NC}}"
-            echo "  $_DAEMON_LOG_FILE"
-            rm -f "$_DAEMON_PID_FILE" # Clean up pid file on failure
-            return 1
-        fi
-    }}
-
-    _daemon_stop() {{
-        if ! _daemon_is_running; then
-            echo "${{YELLOW}}Daemon is not running.${{NC}}"
-            return 1
-        fi
-
-        local pid=$(_daemon_get_pid)
-        echo "${{BLUE}}Stopping {bin_name} daemon (PID: $pid)...${{NC}}"
-        kill $pid
-        # Wait for process to terminate
-        local count=0
-        while ps -p $pid > /dev/null && [ $count -lt 10 ]; do
-            sleep 0.5
-            count=$((count + 1))
-        done
-
-        if ps -p $pid > /dev/null; then
-            echo "${{RED}}Error: Daemon process $pid did not stop gracefully.${{NC}}"
-            echo "${{YELLOW}}Consider using '{function_name} force-stop'.${{NC}}"
-            return 1
-        else
-            rm -f "$_DAEMON_PID_FILE"
-            echo "${{GREEN}}Daemon stopped successfully.${{NC}}"
-            return 0
-        fi
-    }}
-
-    _daemon_force_stop() {{
-        if ! _daemon_is_running; then
-             # Try to remove potentially stale PID file even if not running
-             if [ -f "$_DAEMON_PID_FILE" ]; then
-                echo "${{YELLOW}}Daemon not running, but removing stale PID file: $_DAEMON_PID_FILE${{NC}}"
-                rm -f "$_DAEMON_PID_FILE"
-             else
-                echo "${{YELLOW}}Daemon is not running.${{NC}}"
-             fi
-            return 1
-        fi
-
-        local pid=$(_daemon_get_pid)
-        echo "${{YELLOW}}Force stopping {bin_name} daemon (PID: $pid)...${{NC}}"
-        kill -9 $pid
-        sleep 0.5 # Give kill signal time
-        if ps -p $pid > /dev/null; then
-             echo "${{RED}}Error: Failed to force stop process $pid.${{NC}}" >&2
-             return 1
-        else
-            rm -f "$_DAEMON_PID_FILE"
-            echo "${{GREEN}}Daemon force-stopped successfully.${{NC}}"
-            return 0
-        fi
-    }}
-
-    case "$1" in
-        start)
-            _daemon_start
-            ;;
-        stop)
-            _daemon_stop
-            ;;
-        force-stop|force)
-            _daemon_force_stop
-            ;;
-        restart)
-            _daemon_stop
-            sleep 1
-            _daemon_start
-            ;;
-        reload)
-            echo "${{YELLOW}}Reload not supported, performing restart...${{NC}}"
-            _daemon_stop
-            sleep 1
-            _daemon_start
-            ;;
-        status)
-            if _daemon_is_running; then
-                echo "${{GREEN}}Daemon is running (PID: $(_daemon_get_pid)).${{NC}}"
-            else
-                echo "${{RED}}Daemon is not running.${{NC}}"
-            fi
-            ;;
-        logs)
-            echo "${{BLUE}}Showing logs (Ctrl+C to stop)...${{NC}}"
-            if [ -f "$_DAEMON_LOG_FILE" ]; then
-                 tail -f "$_DAEMON_LOG_FILE"
-            else
-                 echo "${{YELLOW}}Log file not found: $_DAEMON_LOG_FILE${{NC}}"
-                 echo "Try starting the daemon first ('{function_name} start')."
-            fi
-            ;;
-        *)
-            echo "Usage: {function_name} {{start|stop|restart|reload|force-stop|status|logs}}"
-            return 1
-            ;;
-    esac
-
-    return $?
-}}
-{end_marker}
-"#,
-        start_marker = start_marker,
-        end_marker = end_marker,
-        bin_name = daemon.bin_name,
-        function_name = daemon.function_name,
-        daemon_path = daemon_bin_path.display(),
-        config_dir = config_dir.display(),
-        runtime_dir = runtime_dir
-    );
-
-    append_to_shell_config(&shell_config_path, &wrapper_content)?;
-    info!(
-        "{} wrapper function created in {}",
-        daemon.function_name,
-        shell_config_path.display()
-    );
 
     Ok(())
 }
@@ -1246,17 +1016,6 @@ fn uninstall_all(
         "# Gemini CLI Wrapper Function Start",
         "# Gemini CLI Wrapper Function End",
     )?;
-    for daemon in daemons {
-        let start_marker = format!(
-            "# {} Management Function Start",
-            daemon.function_name.to_uppercase()
-        );
-        let end_marker = format!(
-            "# {} Management Function End",
-            daemon.function_name.to_uppercase()
-        );
-        remove_shell_function(&shell_config_path, &start_marker, &end_marker)?;
-    }
     info!("Shell wrapper functions removed.");
 
     // Remove configuration if force flag is set
@@ -1354,9 +1113,6 @@ fn update_all(
 
     // Update shell wrappers
     create_cli_wrapper(install_dir, config_dir)?;
-    for daemon in daemons {
-        create_daemon_wrapper(daemon, install_dir, config_dir)?;
-    }
 
     // Ensure unified config exists (will create if missing)
     install_unified_config(install_dir, config_dir, mcp_servers)?;
@@ -1365,7 +1121,7 @@ fn update_all(
     info!("Checking configuration values...");
     check_and_prompt_for_config_value(
         &config_dir.join("config.toml"),
-        &["gemini", "api_key"],
+        &["gemini-api", "api_key"],
         "Enter your Gemini API Key:",
     )?;
     info!("Configuration checks complete.");
