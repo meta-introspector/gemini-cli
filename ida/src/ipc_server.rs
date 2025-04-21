@@ -1,7 +1,6 @@
 use crate::config::IdaConfig;
 use crate::llm_clients::LLMClient;
 use crate::{memory_mcp_client, storage};
-use anyhow::Context;
 use gemini_ipc::internal_messages::InternalMessage;
 use gemini_memory::broker::McpHostInterface;
 use gemini_memory::MemoryStore;

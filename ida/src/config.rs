@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use gemini_core::config::{
-    IdaConfig as CoreIdaConfig, MemoryBrokerConfig as CoreMemoryBrokerConfig, UnifiedConfig,
+    IdaConfig as CoreIdaConfig, UnifiedConfig,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Configuration for the IDA daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
