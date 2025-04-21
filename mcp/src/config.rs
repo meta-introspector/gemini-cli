@@ -1,9 +1,5 @@
-use dirs;
-use gemini_core::config::{get_mcp_servers_config_path, UnifiedConfig};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // Re-export the McpServerConfig and McpTransport from core
 pub use gemini_core::config::{McpServerConfig, McpTransport};
