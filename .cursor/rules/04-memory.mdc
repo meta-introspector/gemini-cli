@@ -13,7 +13,7 @@ Persistent, semantic memory is managed by the `gemini-memory` crate ([memory/REA
 *   **`Memory` Struct ([memory/src/memory.rs](mdc:memory/src/memory.rs))**: Represents a single memory item (key, value, timestamp, tags, metadata, vector embedding).
 *   **LanceDB Integration:**
     *   Uses LanceDB ([https://lancedb.com/](mdc:https:/lancedb.com)) as the vector database for efficient storage and semantic search.
-    *   Database typically located at `~/.local/share/gemini-cli/memory.db` ([memory/src/config.rs](mdc:memory/src/config.rs)).
+    *   Database typically located at `~/.local/share/gemini-suite/memory.db` ([memory/src/config.rs](mdc:memory/src/config.rs)).
     *   Schema defined using Apache Arrow ([memory/src/schema.rs](mdc:memory/src/schema.rs)), including a vector column.
     *   CRUD operations and vector search are implemented using the LanceDB Rust SDK.
 *   **Embeddings via MCP:**

@@ -1,11 +1,14 @@
 #!/bin/bash
-# This is a wrapper script for the Python embedding MCP server
+# Script to launch the Python embedding MCP server
+VENV_DIR="/home/james/.local/share/gemini-suite/mcp-servers/embedding/venv"
+SERVER_SCRIPT="/home/james/.local/share/gemini-suite/mcp-servers/embedding/server.py"
 
-VENV_DIR="/home/james/.local/share/gemini-cli/mcp-servers/embedding/venv"
-SERVER_SCRIPT="/home/james/.local/share/gemini-cli/mcp-servers/embedding/server.py"
+if [ ! -d "$VENV_DIR" ] || [ ! -f "$SERVER_SCRIPT" ]; then
+  echo "Error: Embedding server environment not found. Please run installation script." >&2
+  exit 1
+fi
 
-# Activate virtual environment
-source "/home/james/.local/share/gemini-cli/mcp-servers/embedding/venv/bin/activate"
+source "$VENV_DIR/bin/activate"
 
-# Execute the Python server script
-exec python3 "" "gemini-cli-bin"
+# Pass through any arguments to the server script
+exec python3 "$SERVER_SCRIPT" "$@"

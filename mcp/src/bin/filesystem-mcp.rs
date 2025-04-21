@@ -147,7 +147,10 @@ fn list_directory(dir_path: &Path) -> Result<Vec<serde_json::Value>, Box<dyn Err
     Ok(file_list)
 }
 
-fn read_file(file_path: &Path, max_size: Option<usize>) -> Result<String, Box<dyn Error + Send + Sync>> {
+fn read_file(
+    file_path: &Path,
+    max_size: Option<usize>,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
     let metadata = fs::metadata(file_path)?;
     if metadata.is_dir() {
         return Err(format!("Path is a directory, not a file: {}", file_path.display()).into());
@@ -155,7 +158,7 @@ fn read_file(file_path: &Path, max_size: Option<usize>) -> Result<String, Box<dy
 
     let file_size = metadata.len() as usize;
     let size_limit = max_size.unwrap_or(file_size);
-    
+
     if size_limit >= file_size {
         // Read the entire file
         let content = fs::read_to_string(file_path)?;
@@ -166,19 +169,23 @@ fn read_file(file_path: &Path, max_size: Option<usize>) -> Result<String, Box<dy
         let mut buffer = vec![0; size_limit];
         use std::io::Read;
         file.read_exact(&mut buffer)?;
-        
+
         let content = String::from_utf8_lossy(&buffer).to_string();
         Ok(content)
     }
 }
 
-fn write_file(file_path: &Path, content: &str, create_dirs: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+fn write_file(
+    file_path: &Path,
+    content: &str,
+    create_dirs: bool,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     if create_dirs {
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent)?;
         }
     }
-    
+
     fs::write(file_path, content)?;
     Ok(())
 }
@@ -206,7 +213,7 @@ async fn handle_tool_execute(params: Value) -> Result<Value, Box<dyn Error + Sen
                 .as_str()
                 .ok_or("Missing 'path' field in arguments")?;
             let path = Path::new(path_str);
-            
+
             let file_list = list_directory(path)?;
             Ok(json!({
                 "files": file_list
@@ -217,10 +224,10 @@ async fn handle_tool_execute(params: Value) -> Result<Value, Box<dyn Error + Sen
                 .as_str()
                 .ok_or("Missing 'path' field in arguments")?;
             let path = Path::new(path_str);
-            
+
             let max_size = arguments["max_size"].as_u64().map(|s| s as usize);
             let content = read_file(path, max_size)?;
-            
+
             Ok(json!({
                 "content": content
             }))
@@ -230,15 +237,15 @@ async fn handle_tool_execute(params: Value) -> Result<Value, Box<dyn Error + Sen
                 .as_str()
                 .ok_or("Missing 'path' field in arguments")?;
             let path = Path::new(path_str);
-            
+
             let content = arguments["content"]
                 .as_str()
                 .ok_or("Missing 'content' field in arguments")?;
-                
+
             let create_dirs = arguments["create_dirs"].as_bool().unwrap_or(false);
-            
+
             write_file(path, content, create_dirs)?;
-            
+
             Ok(json!({
                 "success": true
             }))
@@ -248,9 +255,9 @@ async fn handle_tool_execute(params: Value) -> Result<Value, Box<dyn Error + Sen
                 .as_str()
                 .ok_or("Missing 'path' field in arguments")?;
             let path = Path::new(path_str);
-            
+
             delete_file(path)?;
-            
+
             Ok(json!({
                 "success": true
             }))
@@ -261,9 +268,7 @@ async fn handle_tool_execute(params: Value) -> Result<Value, Box<dyn Error + Sen
                 "path": current_dir.to_string_lossy().to_string()
             }))
         }
-        _ => {
-            Err(format!("Unknown tool: {}", tool_name).into())
-        }
+        _ => Err(format!("Unknown tool: {}", tool_name).into()),
     }
 }
 
@@ -277,7 +282,7 @@ async fn handle_request(
     match request.method.as_str() {
         "initialize" => {
             info!("Handling initialize request");
-            
+
             let server_info = ServerInfo {
                 name: "filesystem-mcp".to_string(),
                 version: "1.0.0".to_string(),
@@ -330,9 +335,9 @@ async fn handle_request(
         }
         "mcp/tool/execute" => {
             info!("Handling mcp/tool/execute request");
-            
+
             let params = request.params.clone().unwrap_or(json!({}));
-            
+
             match handle_tool_execute(params).await {
                 Ok(result) => {
                     let response = Response {
@@ -381,7 +386,7 @@ async fn handle_request(
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Initialize logging
     env_logger::init();
-    
+
     info!("Starting filesystem MCP server...");
 
     let mut stdout = BufWriter::new(tokio::io::stdout());
@@ -523,4 +528,4 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     info!("Filesystem MCP server shutting down.");
     Ok(())
-} 
+}

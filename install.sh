@@ -55,6 +55,15 @@ else
     exit 1
 fi
 
+# Ensure config directory exists
+CONFIG_DIR="$HOME/.config/gemini-suite"
+echo -e "\n${YELLOW}Setting up configuration directory at $CONFIG_DIR...${NC}"
+mkdir -p "$CONFIG_DIR"
+echo -e "${GREEN}✓ Configuration directory created/verified${NC}"
+
+# Note about configuration
+echo -e "${YELLOW}Configuration will be created by the Rust installer.${NC}"
+
 # Build the installer binary
 echo -e "\n${YELLOW}Building installer binary...${NC}"
 
@@ -106,6 +115,10 @@ if [ $VERBOSE -eq 1 ]; then
     INSTALLER_CMD="$INSTALLER_CMD -v"
 fi
 
+# Export the config directory for the installer and all daemons
+export GEMINI_CONFIG_DIR="$CONFIG_DIR"
+echo -e "${GREEN}✓ Set GEMINI_CONFIG_DIR environment variable to $CONFIG_DIR${NC}"
+
 # Add other arguments
 for arg in "$@"; do
     INSTALLER_CMD="$INSTALLER_CMD $arg"
@@ -122,4 +135,11 @@ if [ $EXIT_CODE -ne 0 ]; then
 fi
 
 echo -e "\n${GREEN}Installation process completed.${NC}"
-echo -e "Please reload your shell (or start a new terminal) to use the installed components." 
+echo -e "Please reload your shell (or start a new terminal) to use the installed components."
+
+# Final instructions
+echo -e "\n${YELLOW}Next steps:${NC}"
+echo -e "1. Edit your configuration file at: ${BLUE}$CONFIG_DIR/config.toml${NC}"
+echo -e "   • Add your Gemini API key in the [gemini-api] section"
+echo -e "2. Start the daemons using: ${BLUE}gemini-manager start${NC}"
+echo -e "3. You can check the status using: ${BLUE}gemini-manager status${NC}" 

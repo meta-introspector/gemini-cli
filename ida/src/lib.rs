@@ -3,3 +3,6 @@ pub mod config;
 pub mod ipc_server;
 pub mod memory_mcp_client;
 pub mod storage;
+pub mod llm_clients;
+
+pub use config::IdaConfig;

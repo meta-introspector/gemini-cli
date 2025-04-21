@@ -23,14 +23,12 @@ diffy = "0.3"
 anyhow = "1.0"
 tracing = "0.1"
 gemini-ipc = { path = "../ipc" }
+gemini-core = { path = "../core" }
 
 [[bin]]
 name = "gemini-cli"
 path = "src/main.rs"
 
-[[bin]]
-name = "gemini-cli-bin"
-path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -6,7 +6,7 @@ use tokio::net::UnixStream;
 use tracing::{debug, error, warn};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2); // Timeout for establishing connection
-// Keep retry logic for initial connection attempt within a single request cycle
+                                                          // Keep retry logic for initial connection attempt within a single request cycle
 const MAX_RETRIES: u32 = 1; // Reduce retries for per-request connections
 const RETRY_DELAY: Duration = Duration::from_millis(100);
 
@@ -66,26 +66,39 @@ impl IdaClient {
         Err(IdaClientError::ConnectionFailed(
             socket_path.to_string(),
             last_error.unwrap_or_else(|| {
-                io::Error::new(io::ErrorKind::Other, "Connection attempt failed without specific error")
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "Connection attempt failed without specific error",
+                )
             }),
         ))
     }
 
     // Static method: Connects, sends, receives, disconnects.
-    pub async fn get_memories(socket_path: &str, query: &str) -> Result<Vec<MemoryItem>> {
+    pub async fn get_memories(
+        socket_path: &str, 
+        query: &str,
+        conversation_context: Option<String>
+    ) -> Result<Vec<MemoryItem>> {
         let stream = Self::connect_with_retry(socket_path).await?;
         let (reader, writer) = stream.into_split();
         let mut buf_reader = BufReader::new(reader);
         let mut buf_writer = BufWriter::new(writer);
 
+        // Log before moving the value
+        let has_context = conversation_context.is_some();
+        
         // Send request
-        let request = InternalMessage::GetMemoriesRequest { query: query.to_string() };
+        let request = InternalMessage::GetMemoriesRequest {
+            query: query.to_string(),
+            conversation_context, // Include the conversation context
+        };
         let serialized = serde_json::to_vec(&request)?;
         let len_bytes = (serialized.len() as u32).to_be_bytes();
         buf_writer.write_all(&len_bytes).await?;
         buf_writer.write_all(&serialized).await?;
         buf_writer.flush().await?;
-        debug!(query, "Sent GetMemoriesRequest");
+        debug!(query, has_context, "Sent GetMemoriesRequest");
 
         // Receive response
         let mut len_bytes_resp = [0u8; 4];
@@ -117,6 +130,6 @@ impl IdaClient {
         buf_writer.flush().await?;
         debug!("Sent StoreTurnRequest asynchronously");
         Ok(())
-         // Connection automatically closed when stream/writer go out of scope
+        // Connection automatically closed when stream/writer go out of scope
     }
 }

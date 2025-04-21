@@ -7,7 +7,7 @@ The `mcp-hostd` binary included in this crate is the main daemon process.
 ## Features
 
 *   **MCP Host Implementation**: Provides the `McpHost` struct which manages the lifecycle and communication with configured MCP servers.
-*   **Server Discovery & Management**: Loads server configurations from `~/.config/gemini-cli/mcp_servers.json`.
+*   **Server Discovery & Management**: Loads server configurations from `~/.config/gemini-suite/mcp_servers.json`.
 *   **Multiple Transports**: Supports connecting to MCP servers via `Stdio`, `SSE` (Server-Sent Events), and `WebSocket`.
 *   **Process Management (Stdio)**: Launches and manages the lifecycle of MCP servers configured to run as local processes via standard I/O.
 *   **JSON-RPC Communication**: Handles MCP's JSON-RPC 2.0 based communication for initialization, tool execution (`mcp/tool/execute`), resource retrieval (`resource/get`), and standard notifications (logs, progress, cancellation).
@@ -52,7 +52,7 @@ These modules can be compiled into standalone server binaries or potentially int
 
 This crate is primarily intended to be used via the `mcp-hostd` binary. 
 
-1.  **Configure Servers**: Create or modify `~/.config/gemini-cli/mcp_servers.json` to define the MCP servers you want the host to connect to.
+1.  **Configure Servers**: Create or modify `~/.config/gemini-suite/mcp_servers.json` to define the MCP servers you want the host to connect to.
 
     ```json
     [

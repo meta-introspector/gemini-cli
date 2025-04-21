@@ -1,12 +1,15 @@
+use crate::config::IdaConfig;
+use crate::llm_clients::LLMClient;
 use crate::{memory_mcp_client, storage};
+use anyhow::Context;
 use gemini_ipc::internal_messages::InternalMessage;
+use gemini_memory::broker::McpHostInterface;
 use gemini_memory::MemoryStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, instrument, warn};
-use anyhow::Context;
 
 /// Configuration for the IDA daemon
 #[derive(Debug, Clone)]
@@ -31,36 +34,51 @@ pub enum ServerError {
     Anyhow(#[from] anyhow::Error),
 }
 
-#[instrument(skip(config))]
-pub async fn run_server(config: DaemonConfig) -> Result<(), ServerError> {
-    let ipc_path = Path::new(&config.ipc_path);
+/// Holds shared state for the IDA daemon and connection handlers
+#[derive(Clone)]
+struct ServerState {
+    config: Arc<IdaConfig>,
+    memory_store: Arc<MemoryStore>,
+    mcp_host: Option<Arc<dyn McpHostInterface + Send + Sync>>,
+    llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
+}
+
+// Manual Debug implementation because LLMClient and McpHostInterface might not impl Debug
+impl std::fmt::Debug for ServerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerState")
+            .field("config", &self.config)
+            .field("memory_store", &self.memory_store)
+            .field("mcp_host_present", &self.mcp_host.is_some())
+            .field("llm_client_present", &self.llm_client.is_some())
+            .finish()
+    }
+}
+
+#[instrument(skip(config, memory_store, mcp_host, llm_client))]
+pub async fn run_server(
+    config: IdaConfig,
+    memory_store: Arc<MemoryStore>,
+    mcp_host: Option<Arc<dyn McpHostInterface + Send + Sync>>,
+    llm_client: Option<Arc<dyn LLMClient + Send + Sync>>,
+) -> Result<(), ServerError> {
+    let ipc_path = Path::new(&config.ida_socket_path);
 
     // Clean up existing socket file if it exists
     if ipc_path.exists() {
         warn!("IPC socket file already exists, removing: {:?}", ipc_path);
         tokio::fs::remove_file(ipc_path).await?;
     }
-    
-    // Initialize the memory store
-    info!("Initializing memory store...");
-    let memory_store = Arc::new(
-        MemoryStore::new(
-            config.memory_db_path.clone(), 
-            None, // Default embedding model
-            None, // No MCP host for now
-        )
-        .await
-        .context("Failed to initialize memory store")?
-    );
-    info!("Memory store initialized successfully");
 
     let listener = UnixListener::bind(ipc_path)?;
     info!("IDA Daemon listening on IPC path: {:?}", ipc_path);
-    
-    // Create a cloneable config that includes the memory_store
+
+    // Create a cloneable state containing all necessary components
     let server_state = Arc::new(ServerState {
-        config: config.clone(),
-        memory_store: memory_store.clone(),
+        config: Arc::new(config),
+        memory_store,
+        mcp_host,
+        llm_client,
     });
 
     loop {
@@ -88,21 +106,17 @@ pub async fn run_server(config: DaemonConfig) -> Result<(), ServerError> {
     // Ok(()) // Unreachable in the current loop structure
 }
 
-/// Holds shared state for connection handlers
-#[derive(Debug)]
-struct ServerState {
-    config: DaemonConfig,
-    memory_store: Arc<MemoryStore>,
-}
-
 #[instrument(skip(stream, state), name = "ipc_connection_handler")]
-async fn handle_connection(mut stream: UnixStream, state: Arc<ServerState>) -> Result<(), ServerError> {
+async fn handle_connection(
+    mut stream: UnixStream,
+    state: Arc<ServerState>,
+) -> Result<(), ServerError> {
     let mut buffer = Vec::with_capacity(4096); // Start with 4KB, might need adjustment
 
     loop {
         // Read data from the stream
         buffer.clear(); // Clear buffer for new message
-        // Simple length-prefixing: Read u32 length first
+                        // Simple length-prefixing: Read u32 length first
         let length = match stream.read_u32().await {
             Ok(len) => len,
             Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -143,32 +157,38 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<ServerState>) -> R
 
         // Process the message based on its type
         match message {
-            InternalMessage::GetMemoriesRequest { query } => {
+            InternalMessage::GetMemoriesRequest {
+                query,
+                conversation_context,
+            } => {
                 info!("Processing GetMemoriesRequest for query: {}", query);
-                
+
                 // Use the real memory retrieval function
                 let memories = memory_mcp_client::retrieve_memories(
-                    &query, 
+                    &query,
                     state.memory_store.clone(),
                     state.config.max_memory_results,
-                ).await?;
-                
+                    &state.llm_client,
+                    conversation_context,
+                )
+                .await?;
+
                 let response = InternalMessage::GetMemoriesResponse { memories };
                 send_message(&mut stream, &response).await?;
             }
             InternalMessage::StoreTurnRequest { turn_data } => {
                 info!("Processing StoreTurnRequest, spawning background task.");
-                
+
                 // Clone the memory store for the background task
                 let memory_store_clone = state.memory_store.clone();
-                
+
                 // Spawn a background task for storage and continue handling connection
                 tokio::spawn(async move {
                     if let Err(e) = storage::handle_storage(turn_data, memory_store_clone).await {
                         error!("Error in background storage task: {}", e);
                     }
                 });
-                
+
                 // No response is sent for this message type
             }
             // Handle other message types if added later
@@ -183,7 +203,10 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<ServerState>) -> R
 }
 
 // Helper function to send a message with length prefix
-async fn send_message(stream: &mut UnixStream, message: &InternalMessage) -> Result<(), ServerError> {
+async fn send_message(
+    stream: &mut UnixStream,
+    message: &InternalMessage,
+) -> Result<(), ServerError> {
     let serialized = serde_json::to_vec(message)?;
     let len = serialized.len() as u32;
 

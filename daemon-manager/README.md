@@ -112,7 +112,7 @@ The services are configured to:
 
 ## MCP Server Configuration
 
-MCP servers are configured in `~/.config/gemini-cli/mcp_servers.json`. This tool provides a convenient interface for managing this configuration.
+MCP servers are configured in `~/.config/gemini-suite/mcp_servers.json`. This tool provides a convenient interface for managing this configuration.
 
 Built-in servers (filesystem, command, memory-store) are always available and can be enabled/disabled as needed.
 
@@ -120,11 +120,15 @@ Built-in servers (filesystem, command, memory-store) are always available and ca
 
 The following configuration files are managed by this tool:
 
-- `~/.config/gemini-cli/config.toml`: Gemini CLI configuration
-- `~/.config/gemini-cli/mcp_servers.json`: MCP server configuration
-- `~/.config/gemini-cli/happe.toml`: HAPPE daemon configuration
-- `~/.config/gemini-cli/ida.toml`: IDA daemon configuration
-- `~/.config/gemini-cli/mcp-hostd.toml`: MCP host daemon configuration
+- `~/.config/gemini-suite/config.toml`: Unified configuration for all components
+- `~/.config/gemini-suite/mcp_servers.json`: MCP server configuration
+- `~/.config/gemini-suite/happe.toml`: HAPPE daemon configuration
+- `~/.config/gemini-suite/ida.toml`: IDA daemon configuration
+- `~/.config/gemini-suite/mcp-hostd.toml`: MCP host daemon configuration
+- `~/.local/share/gemini-suite/memory.db`: Memory store database
+- `~/.local/share/gemini-suite/history/`: CLI history files
+- `~/.local/share/gemini-suite/mcp-servers/`: Directory for managed MCP servers (like embedding model)
+- `/tmp/gemini-suite/`: Runtime sockets for daemon IPC
 
 ## Startup and Shutdown Order
 

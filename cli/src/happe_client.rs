@@ -81,9 +81,19 @@ impl HappeClient {
         };
         info!("Using HAPPE IPC socket path: {}", path.display());
         
-        // Generate a unique session ID for this client
-        let session_id = Uuid::new_v4().to_string();
-        info!("Created new session with ID: {}", session_id);
+        // Check if we have a session ID in the environment (set by the shell wrapper)
+        let session_id = match std::env::var("GEMINI_SESSION_ID") {
+            Ok(id) => {
+                info!("Using session ID from environment: {}", id);
+                id
+            },
+            Err(_) => {
+                // No environment variable, generate a new session ID
+                let id = Uuid::new_v4().to_string();
+                info!("No session ID in environment, created new session with ID: {}", id);
+                id
+            }
+        };
         
         Ok(Self { 
             socket_path: path,
@@ -201,5 +211,77 @@ impl HappeClient {
                 Ok(false)
             }
         }
+    }
+
+    /// Lists all active sessions from the HAPPE daemon.
+    pub async fn list_sessions(&self) -> Result<Vec<String>> {
+        debug!("Connecting to HAPPE daemon to list sessions...");
+        let mut stream = self.connect().await?;
+        debug!("Connected. Sending list_sessions command...");
+
+        let request = HappeQueryRequest { 
+            query: "__LIST_SESSIONS__".to_string(),
+            session_id: Some(self.session_id.clone()),
+        };
+        
+        let serialized_request =
+            serde_json::to_vec(&request).context("Failed to serialize HappeQueryRequest")?;
+        let len = serialized_request.len() as u32;
+
+        // Send length prefix in little-endian format
+        stream
+            .write_all(&len.to_le_bytes())
+            .await
+            .context("Failed to write request length to HAPPE socket")?;
+        // Send request body
+        stream
+            .write_all(&serialized_request)
+            .await
+            .context("Failed to write request body to HAPPE socket")?;
+        stream
+            .flush()
+            .await
+            .context("Failed to flush HAPPE socket after writing request")?;
+        debug!("List sessions command sent successfully ({} bytes)", len);
+
+        // Read response length in little-endian format
+        debug!("Waiting for response length...");
+        let mut size_buf = [0u8; 4];
+        stream
+            .read_exact(&mut size_buf)
+            .await
+            .context("Failed to read response length from HAPPE socket")?;
+        let response_len = u32::from_le_bytes(size_buf);
+        debug!("Received response length: {}", response_len);
+
+        if response_len == 0 {
+            return Err(anyhow!("Received zero-length response from HAPPE"));
+        }
+
+        // Read response body
+        let mut response_buffer = vec![0; response_len as usize];
+        stream
+            .read_exact(&mut response_buffer)
+            .await
+            .context("Failed to read response body from HAPPE socket")?;
+        debug!("Received response body ({} bytes)", response_len);
+
+        // Deserialize response
+        let response: HappeQueryResponse = serde_json::from_slice(&response_buffer)
+            .context("Failed to deserialize HappeQueryResponse")?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("Error listing sessions: {}", error));
+        }
+
+        // Parse the response which should be a JSON array of session IDs
+        let sessions = if !response.response.is_empty() {
+            serde_json::from_str::<Vec<String>>(&response.response)
+                .context("Failed to parse session list response")?
+        } else {
+            Vec::new()
+        };
+
+        Ok(sessions)
     }
 }

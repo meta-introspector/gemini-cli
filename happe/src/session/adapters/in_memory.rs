@@ -106,6 +106,27 @@ impl SessionStore for InMemorySessionStore {
         
         Ok(count)
     }
+
+    async fn list_sessions(&self) -> Result<Vec<Session>, SessionStoreError> {
+        let sessions = self.sessions.read().map_err(|e| {
+            SessionStoreError::StorageError(format!("Failed to acquire read lock: {}", e))
+        })?;
+        
+        let now = Utc::now();
+        let active_sessions: Vec<Session> = sessions
+            .values()
+            .filter(|session| {
+                match session.expires_at {
+                    Some(expires_at) => expires_at > now,
+                    None => true // No expiry, always active
+                }
+            })
+            .cloned()
+            .collect();
+        
+        debug!("Listed {} active sessions", active_sessions.len());
+        Ok(active_sessions)
+    }
 }
 
 #[cfg(test)]

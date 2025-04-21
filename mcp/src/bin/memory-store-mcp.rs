@@ -279,21 +279,19 @@ async fn read_message<'a>(
 
         // Try to read the exact content length
         match reader.read_exact(content_buffer).await {
-            Ok(_) => {
-                match String::from_utf8(content_buffer.clone()) {
-                    Ok(json_str) => {
-                        debug!("Successfully read JSON content: {}", json_str);
-                        Ok(Some(json_str))
-                    }
-                    Err(e) => {
-                        error!("Invalid UTF-8 in content: {}", e);
-                        Err(ReadMessageError::Io(tokio::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Invalid UTF-8 in content: {}", e),
-                        )))
-                    }
+            Ok(_) => match String::from_utf8(content_buffer.clone()) {
+                Ok(json_str) => {
+                    debug!("Successfully read JSON content: {}", json_str);
+                    Ok(Some(json_str))
                 }
-            }
+                Err(e) => {
+                    error!("Invalid UTF-8 in content: {}", e);
+                    Err(ReadMessageError::Io(tokio::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Invalid UTF-8 in content: {}", e),
+                    )))
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 // Handle EOF by returning what we have so far
                 warn!("EOF while reading content, got partial content");
@@ -466,12 +464,12 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| "Missing or invalid 'key' field".to_string())?;
-            
+
             let content = arguments["content"]
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| "Missing or invalid 'content' field".to_string())?;
-            
+
             let tags = arguments["tags"]
                 .as_array()
                 .map(|arr| {
@@ -483,11 +481,13 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
 
             // Create timestamp
             let timestamp = chrono::Utc::now();
-            
+
             // Store memory using add_memory instead of store_memory
-            memory_store.add_memory(&key, &content, tags, None, None, None).await
+            memory_store
+                .add_memory(&key, &content, tags, None, None, None)
+                .await
                 .map_err(|e| format!("Failed to store memory: {}", e))?;
-            
+
             // Return success
             Ok(json!({
                 "success": true,
@@ -497,9 +497,11 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
         "list_all_memories" => {
             info!("Executing list_all_memories");
             // Retrieve all memories
-            let memories = memory_store.get_all_memories().await
+            let memories = memory_store
+                .get_all_memories()
+                .await
                 .map_err(|e| format!("Failed to list memories: {}", e))?;
-            
+
             // Convert to JSON
             Ok(json!({
                 "memories": memories.iter().map(|m| {
@@ -519,11 +521,13 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| "Missing or invalid 'key' field".to_string())?;
-            
+
             // Retrieve memory
-            let memory = memory_store.get_by_key(&key).await
+            let memory = memory_store
+                .get_by_key(&key)
+                .await
                 .map_err(|e| format!("Failed to retrieve memory: {}", e))?;
-            
+
             // Return memory or error if not found
             match memory {
                 Some(m) => Ok(json!({
@@ -534,7 +538,7 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
                         "timestamp": format_timestamp(m.timestamp)
                     }
                 })),
-                None => Err(format!("Memory with key '{}' not found", key))
+                None => Err(format!("Memory with key '{}' not found", key)),
             }
         }
         "retrieve_memory_by_tag" => {
@@ -544,11 +548,13 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| "Missing or invalid 'tag' field".to_string())?;
-            
+
             // Retrieve memories
-            let memories = memory_store.get_by_tag(&tag).await
+            let memories = memory_store
+                .get_by_tag(&tag)
+                .await
                 .map_err(|e| format!("Failed to retrieve memories by tag: {}", e))?;
-            
+
             // Return memories
             Ok(json!({
                 "memories": memories.iter().map(|m| {
@@ -568,11 +574,13 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| "Missing or invalid 'key' field".to_string())?;
-            
+
             // Delete memory
-            let count = memory_store.delete_by_key(&key).await
+            let count = memory_store
+                .delete_by_key(&key)
+                .await
                 .map_err(|e| format!("Failed to delete memory: {}", e))?;
-            
+
             // Return success
             Ok(json!({
                 "success": true,
@@ -589,8 +597,8 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
 // Helper function to format Unix timestamp to RFC3339
 fn format_timestamp(unix_timestamp: u64) -> String {
     let datetime = chrono::DateTime::<chrono::Utc>::from_utc(
-        chrono::NaiveDateTime::from_timestamp_opt(unix_timestamp as i64, 0).unwrap_or_default(), 
-        chrono::Utc
+        chrono::NaiveDateTime::from_timestamp_opt(unix_timestamp as i64, 0).unwrap_or_default(),
+        chrono::Utc,
     );
     datetime.to_rfc3339()
 }
@@ -822,4 +830,4 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     info!("Memory-store MCP server shutting down.");
     // Perform any final cleanup here if needed
     Ok(())
-} 
+}

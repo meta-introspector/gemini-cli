@@ -1,166 +1,124 @@
+use gemini_core::config::{
+    get_unified_config_path, DaemonManagerConfig, GeminiApiConfig, HappeConfig, IdaConfig,
+    McpConfig, McpServerConfig, McpTransport, MemoryConfig, UnifiedConfig,
+};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
-use std::path::Path;
-
-use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use toml;
-
-/// Unified configuration structure for the entire Gemini Suite
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct UnifiedConfig {
-    /// Gemini API configuration
-    #[serde(default)]
-    pub gemini: GeminiConfig,
-    
-    /// HAPPE daemon configuration
-    #[serde(default)]
-    pub happe: HappeConfig,
-    
-    /// IDA daemon configuration
-    #[serde(default)]
-    pub ida: IdaConfig,
-    
-    /// MCP server configuration
-    #[serde(default)]
-    pub mcp: McpConfig,
-    
-    /// Memory configuration
-    #[serde(default)]
-    pub memory: MemoryConfig,
-}
-
-/// Configuration struct for Gemini API
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct GeminiConfig {
-    pub api_key: Option<String>,
-    pub system_prompt: Option<String>,
-    pub model_name: Option<String>,
-    pub save_history: Option<bool>,
-    pub enable_memory_broker: Option<bool>,
-    pub enable_auto_memory: Option<bool>,
-    pub memory_broker_model: Option<String>,
-}
-
-/// HAPPE daemon configuration
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct HappeConfig {
-    /// Socket paths
-    pub ida_socket_path: Option<String>,
-    pub happe_socket_path: Option<String>,
-    
-    /// HTTP server settings
-    pub http_enabled: Option<bool>,
-    pub http_bind_addr: Option<String>,
-}
-
-/// IDA daemon configuration
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct IdaConfig {
-    /// Socket path
-    pub socket_path: Option<String>,
-}
-
-/// MCP configuration
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct McpConfig {
-    pub servers: Vec<McpServerConfig>,
-}
-
-/// MCP server configuration
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct McpServerConfig {
-    pub name: String,
-    pub enabled: bool,
-    pub transport: String,
-    pub command: Vec<String>,
-    pub args: Vec<String>,
-    pub env: HashMap<String, String>,
-    pub auto_execute: Vec<String>,
-}
-
-/// Memory configuration
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct MemoryConfig {
-    pub storage_path: Option<String>,
-    pub embedding_model: Option<String>,
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Generating unified configuration file for Gemini Suite...");
-    
-    // Define the config directory
-    let config_dir = Path::new(&dirs::home_dir().unwrap()).join(".config").join("gemini-suite");
-    fs::create_dir_all(&config_dir)?;
-    
-    // Define the unified config file path
-    let unified_config_path = config_dir.join("config.toml");
-    
-    // Create a default configuration
+
+    // Get the unified config path using the core function
+    let unified_config_path = get_unified_config_path()?;
+    let config_dir = unified_config_path.parent().unwrap_or(Path::new("."));
+
+    // Ensure the config directory exists
+    fs::create_dir_all(config_dir)?;
+
+    // Create a unified configuration with sensible defaults
     let mut unified_config = UnifiedConfig::default();
-    
-    // Try to load Gemini config if exists
-    let gemini_config_file = Path::new(&dirs::home_dir().unwrap())
-        .join(".config")
-        .join("gemini-cli")
-        .join("config.toml");
-    
-    if gemini_config_file.exists() {
-        println!("Loading existing Gemini configuration from {:?}", gemini_config_file);
-        let content = fs::read_to_string(&gemini_config_file)?;
-        if let Ok(config) = toml::from_str::<GeminiConfig>(&content) {
-            unified_config.gemini = config;
-        }
+
+    // Set up CLI config with defaults
+    unified_config.cli.log_level = Some("info".to_string());
+    unified_config.cli.happe_ipc_path = Some(PathBuf::from("/tmp/gemini_suite_happe.sock"));
+    unified_config.cli.history_file_path = Some(
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".config/gemini-suite/history.json"),
+    );
+
+    // Set up HAPPE config with defaults
+    if unified_config.happe.ida_socket_path.is_none() {
+        unified_config.happe.ida_socket_path = Some(PathBuf::from("/tmp/gemini_suite_ida.sock"));
     }
-    
-    // Try to load HAPPE config if exists
-    let happe_config_file = config_dir.join("happe").join("config.toml");
-    if happe_config_file.exists() {
-        println!("Loading existing HAPPE configuration from {:?}", happe_config_file);
-        let content = fs::read_to_string(&happe_config_file)?;
-        if let Ok(config) = toml::from_str::<HappeConfig>(&content) {
-            unified_config.happe = config;
-        }
-    } else {
-        // Set default HAPPE config
-        unified_config.happe = HappeConfig {
-            ida_socket_path: Some("/tmp/gemini_suite_ida.sock".to_string()),
-            happe_socket_path: Some("/tmp/gemini_suite_happe.sock".to_string()),
-            http_enabled: Some(true),
-            http_bind_addr: Some("127.0.0.1:8080".to_string()),
-        };
+    if unified_config.happe.happe_socket_path.is_none() {
+        unified_config.happe.happe_socket_path =
+            Some(PathBuf::from("/tmp/gemini_suite_happe.sock"));
     }
-    
-    // Try to load IDA config if exists
-    let ida_config_file = config_dir.join("ida").join("config.toml");
-    if ida_config_file.exists() {
-        println!("Loading existing IDA configuration from {:?}", ida_config_file);
-        let content = fs::read_to_string(&ida_config_file)?;
-        if let Ok(config) = toml::from_str::<IdaConfig>(&content) {
-            unified_config.ida = config;
-        }
-    } else {
-        // Set default IDA config
-        unified_config.ida = IdaConfig {
-            socket_path: Some("/tmp/gemini_suite_ida.sock".to_string()),
-        };
+    if unified_config.happe.http_enabled.is_none() {
+        unified_config.happe.http_enabled = Some(true);
     }
-    
-    // Try to load MCP servers config if exists
-    let mcp_config_file = config_dir.join("mcp").join("servers.json");
-    if mcp_config_file.exists() {
-        println!("Loading existing MCP configuration from {:?}", mcp_config_file);
-        let content = fs::read_to_string(&mcp_config_file)?;
-        if let Ok(servers) = serde_json::from_str::<Vec<McpServerConfig>>(&content) {
-            unified_config.mcp = McpConfig { servers };
-        }
-    } else {
-        // Set default MCP config with standard servers
+    if unified_config.happe.http_bind_addr.is_none() {
+        unified_config.happe.http_bind_addr = Some("127.0.0.1:8080".to_string());
+    }
+
+    // Set up IDA config with defaults
+    if unified_config.ida.ida_socket_path.is_none() {
+        unified_config.ida.ida_socket_path = Some(PathBuf::from("/tmp/gemini_suite_ida.sock"));
+    }
+    if unified_config.ida.memory_db_path.is_none() {
+        unified_config.ida.memory_db_path = Some(config_dir.join("memory/lancedb"));
+    }
+    if unified_config.ida.max_memory_results.is_none() {
+        unified_config.ida.max_memory_results = Some(10);
+    }
+    if unified_config.ida.semantic_similarity_threshold.is_none() {
+        unified_config.ida.semantic_similarity_threshold = Some(0.7);
+    }
+
+    // Set up IDA Memory Broker config defaults
+    if unified_config.ida.memory_broker.provider.is_none() {
+        unified_config.ida.memory_broker.provider = Some("gemini".to_string()); // Default to gemini
+    }
+    // api_key defaults to None implicitly or via struct default
+    if unified_config.ida.memory_broker.model_name.is_none() {
+        unified_config.ida.memory_broker.model_name = Some("gemini-2.0-flash".to_string());
+    }
+    // base_url defaults to None implicitly or via struct default
+
+    // Set up Memory config with defaults
+    if unified_config.memory.db_path.is_none() {
+        unified_config.memory.db_path = Some(config_dir.join("memory/lancedb"));
+    }
+    if unified_config.memory.embedding_model_variant.is_none() {
+        unified_config.memory.embedding_model_variant = Some("base".to_string());
+    }
+    if unified_config.memory.embedding_model.is_none() {
+        unified_config.memory.embedding_model = Some("gemini-2.0-flash".to_string());
+    }
+
+    // Set up MCP config with defaults
+    if unified_config.mcp.mcp_servers_file_path.is_none() {
+        unified_config.mcp.mcp_servers_file_path = Some(config_dir.join("mcp_servers.json"));
+    }
+    if unified_config.mcp.mcp_host_socket_path.is_none() {
+        unified_config.mcp.mcp_host_socket_path = Some(PathBuf::from("/tmp/gemini_suite_mcp.sock"));
+    }
+
+    // Set up Daemon Manager config with defaults
+    if unified_config.daemon_manager.daemon_install_path.is_none() {
+        unified_config.daemon_manager.daemon_install_path = Some(
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local/bin"),
+        );
+    }
+    if unified_config.daemon_manager.show_config_editor.is_none() {
+        unified_config.daemon_manager.show_config_editor = std::env::var("EDITOR").ok();
+    }
+
+    // Generate a default MCP servers configuration if not already present
+    let mcp_servers_path = unified_config
+        .mcp
+        .mcp_servers_file_path
+        .clone()
+        .unwrap_or_else(|| config_dir.join("mcp_servers.json"));
+
+    if !mcp_servers_path.exists() {
+        println!(
+            "Generating default MCP servers configuration at {:?}",
+            mcp_servers_path
+        );
+
+        // Create standard MCP server configurations
         let filesystem_server = McpServerConfig {
             name: "filesystem".to_string(),
             enabled: true,
-            transport: "stdio".to_string(),
-            command: vec!["/home/james/.local/bin/mcp-servers/filesystem-mcp".to_string()],
+            transport: McpTransport::Stdio,
+            command: vec!["builtin".to_string()],
             args: vec![],
             env: {
                 let mut env = HashMap::new();
@@ -169,12 +127,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             },
             auto_execute: vec![],
         };
-        
+
         let command_server = McpServerConfig {
             name: "command".to_string(),
             enabled: true,
-            transport: "stdio".to_string(),
-            command: vec!["/home/james/.local/bin/mcp-servers/command-mcp".to_string()],
+            transport: McpTransport::Stdio,
+            command: vec!["builtin".to_string()],
             args: vec![],
             env: {
                 let mut env = HashMap::new();
@@ -183,12 +141,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             },
             auto_execute: vec![],
         };
-        
+
         let memory_store_server = McpServerConfig {
-            name: "memory_store".to_string(),
+            name: "memory-store".to_string(),
             enabled: true,
-            transport: "stdio".to_string(),
-            command: vec!["/home/james/.local/bin/mcp-servers/memory-store-mcp".to_string()],
+            transport: McpTransport::Stdio,
+            command: vec!["builtin".to_string()],
             args: vec![],
             env: {
                 let mut env = HashMap::new();
@@ -203,24 +161,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "delete_memory_by_key".to_string(),
             ],
         };
-        
-        unified_config.mcp = McpConfig {
-            servers: vec![filesystem_server, command_server, memory_store_server],
-        };
+
+        let servers = vec![filesystem_server, command_server, memory_store_server];
+        gemini_core::config::save_mcp_servers(&servers, Some(&mcp_servers_path))?;
     }
-    
-    // Try to load Memory config if exists (create default if not)
-    unified_config.memory = MemoryConfig {
-        storage_path: Some(config_dir.join("memory").to_string_lossy().into_owned()),
-        embedding_model: Some("gemini-2.0-flash".to_string()),
-    };
-    
+
     // Serialize and write the unified config
-    let toml_content = toml::to_string_pretty(&unified_config)?;
-    fs::write(&unified_config_path, toml_content)?;
-    
-    println!("Unified configuration file created at {:?}", unified_config_path);
-    println!("You may need to modify it according to your needs.");
-    
+    unified_config.save_to_file(&unified_config_path)?;
+
+    println!(
+        "Unified configuration file created at {:?}",
+        unified_config_path
+    );
+    println!("The MCP servers configuration is at {:?}", mcp_servers_path);
+    println!("You may need to modify them according to your needs.");
+
     Ok(())
-} 
+}

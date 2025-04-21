@@ -1,1 +1,0 @@
-import json; import os; with open('/home/james/.config/gemini-suite/mcp_servers.json', 'r') as f: content = f.read().replace('%', ''); data = json.loads(content); with open('/home/james/.config/gemini-suite/mcp_servers.json', 'w') as f: json.dump(data, f, indent=2)

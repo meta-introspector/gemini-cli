@@ -9,7 +9,7 @@ It allows users to chat with Gemini, execute single prompts, manage history, uti
 *   **Interactive Chat Mode**: Provides a REPL-style interface for conversational interactions with Gemini.
 *   **Single Prompt Execution**: Supports sending single prompts directly from the command line.
 *   **Gemini API Interaction**: Uses `gemini-core` to communicate with the Gemini API (`generateContent`).
-*   **Configuration Management**: Loads configuration (API key, model, system prompt, feature flags) from `~/.config/gemini-cli/config.toml` and environment variables (`GEMINI_API_KEY`). Allows setting configuration via flags (`--set-api-key`, etc.).
+*   **Configuration Management**: Loads configuration (API key, model, system prompt, feature flags) from `~/.config/gemini-suite/config.toml` and environment variables (`GEMINI_API_KEY`). Allows setting configuration via flags (`--set-api-key`, etc.).
 *   **MCP Integration**: 
     *   Connects to an MCP host (either the standalone `mcp-hostd` daemon via IPC or by initializing `gemini-mcp::McpHost` internally).
     *   Discovers available tools/resources from the MCP host.
@@ -21,7 +21,7 @@ It allows users to chat with Gemini, execute single prompts, manage history, uti
     *   Leverages the MCP connection (via `McpHostInterface`) to generate embeddings for memories.
     *   Automatically enhances user prompts with relevant context retrieved from the memory store (toggleable via config).
     *   Supports automatic storage of conversation turns into memory (toggleable via config).
-*   **Chat History**: Maintains persistent chat history across sessions (toggleable via flag/config), storing logs in `~/.local/share/gemini-cli/history/`.
+*   **Chat History**: Maintains persistent chat history across sessions (toggleable via flag/config), storing logs in `~/.local/share/gemini-suite/history/`.
 *   **Formatted Output**: Renders Gemini's responses with markdown formatting and syntax highlighting.
 *   **Built-in Server Execution**: The `gemini-cli-bin` executable can also run the built-in MCP servers (`filesystem`, `command`, `memory-store`) directly using flags (`--filesystem-mcp`, `--command-mcp`, `--memory-store-mcp`).
 
@@ -41,9 +41,9 @@ cargo build --release
 
 1.  **API Key**: The CLI requires a Google Gemini API key. Set it using one of the following methods (highest precedence first):
     *   Environment Variable: `export GEMINI_API_KEY="YOUR_API_KEY"`
-    *   Configuration File: Run `gemini-cli-bin --set-api-key YOUR_API_KEY`. This saves it to `~/.config/gemini-cli/config.toml`.
+    *   Configuration File: Run `gemini-cli-bin --set-api-key YOUR_API_KEY`. This saves it to `~/.config/gemini-suite/config.toml`.
 
-2.  **Configuration File (`~/.config/gemini-cli/config.toml`)**: Stores settings like API key, model name, system prompt, and feature flags.
+2.  **Configuration File (`~/.config/gemini-suite/config.toml`)**: Stores settings like API key, model name, system prompt, and feature flags.
     ```toml
     api_key = "your_api_key_here" # Optional if using env var
     system_prompt = "You are a helpful AI assistant." # Optional, default provided
@@ -55,7 +55,7 @@ cargo build --release
     ```
     You can edit this file manually or use flags like `--set-system-prompt` and `--set-model`.
 
-3.  **MCP Servers (`~/.config/gemini-cli/mcp_servers.json`)**: If *not* running the built-in servers directly via flags, configure external MCP servers for the `mcp-hostd` daemon or the internal host fallback. See the `gemini-mcp` README for the format.
+3.  **MCP Servers (`~/.config/gemini-suite/mcp_servers.json`)**: If *not* running the built-in servers directly via flags, configure external MCP servers for the `mcp-hostd` daemon or the internal host fallback. See the `gemini-mcp` README for the format.
 
 ## Usage
 

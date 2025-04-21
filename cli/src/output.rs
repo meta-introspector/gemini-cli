@@ -5,7 +5,7 @@ use pulldown_cmark::{
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
-use syntect::util::{LinesWithEndings, as_24_bit_terminal_escaped};
+use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
 /// Print formatted response from HAPPE daemon to the terminal
 pub fn print_happe_response(response: &str) {
@@ -44,7 +44,10 @@ pub fn render_markdown(markdown: &str) -> String {
     // Initialize syntax highlighting
     let syntax_set = SyntaxSet::load_defaults_newlines();
     let theme_set = ThemeSet::load_defaults();
-    let theme = theme_set.themes.get("base16-ocean.dark").unwrap_or_else(|| theme_set.themes.values().next().unwrap());
+    let theme = theme_set
+        .themes
+        .get("base16-ocean.dark")
+        .unwrap_or_else(|| theme_set.themes.values().next().unwrap());
 
     let mut in_code_block = false;
     let mut code_block_lang = String::new();

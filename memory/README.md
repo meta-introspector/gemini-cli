@@ -31,7 +31,7 @@ It uses LanceDB as a vector database for efficient semantic search and relies on
 *   `memory`: Defines the `Memory` struct.
 *   `schema`: Defines the Apache Arrow schema for LanceDB and the `EmbeddingModelVariant` enum.
 *   `arrow_conversion`: Contains utility functions for converting `Memory` data to/from Arrow `RecordBatch` format.
-*   `config`: Provides helper functions to determine the default path for the memory database (`~/.local/share/gemini-cli/memory.db`).
+*   `config`: Provides helper functions to determine the default path for the memory database (`~/.local/share/gemini-suite/memory.db`).
 *   `errors`: Defines error types specific to the memory crate.
 
 ## Usage

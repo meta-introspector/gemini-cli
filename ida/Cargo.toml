@@ -27,7 +27,7 @@ clap = { version = "4", features = ["derive", "env"] } # Added for command-line 
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 # Error Handling
 anyhow = "1.0" # Keep anyhow for general error handling if needed
@@ -37,6 +37,14 @@ thiserror = "1.0" # For specific error types
 # embedding generation crate (e.g., rust-bert, sentence-transformers)
 chrono = { version = "0.4", features = ["serde"] } # For timestamps
 
+# Added for direct LLM client implementation
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+async-trait = "0.1"
+
 [[bin]]
 name = "ida-daemon"
-path = "src/bin/ida-daemon.rs" 
+path = "src/bin/ida-daemon.rs"
+required-features = ["gemini-mcp"]
+
+[build-dependencies]
+# ... existing code ... 

@@ -1,6 +1,6 @@
 use reqwest::Client;
 
-use crate::config::GeminiConfig;
+use crate::config::GeminiApiConfig;
 use crate::errors::{GeminiError, GeminiResult};
 use crate::types::*;
 
@@ -8,13 +8,13 @@ use crate::types::*;
 #[derive(Debug, Clone)]
 pub struct GeminiClient {
     client: Client,
-    config: GeminiConfig,
+    config: GeminiApiConfig,
     model: GeminiModel,
 }
 
 impl GeminiClient {
     /// Create a new Gemini API client
-    pub fn new(config: GeminiConfig) -> GeminiResult<Self> {
+    pub fn new(config: GeminiApiConfig) -> GeminiResult<Self> {
         let api_key = config.api_key.clone().ok_or_else(|| {
             GeminiError::ConfigError(
                 "API key is required to initialize the Gemini client".to_string(),

@@ -178,31 +178,26 @@ The suite uses a couple of configuration files, primarily managed by the CLI:
 
 ### CLI Configuration (`config.toml`)
 
-*   **Location:** `~/.config/gemini-cli/config.toml`
-*   **Content:** Stores API key, default system prompt, default model name, and feature flags (history, memory broker, auto memory).
-*   **Management:** Use the `gemini` command with flags:
-    *   `gemini --set-api-key YOUR_API_KEY_HERE`
-    *   `gemini --set-system-prompt "Your desired prompt"`
-    *   `gemini --set-model "gemini-1.5-pro-latest"`
-    *   `gemini --show-config`
-    *   Or edit the file manually.
+*   **Location:** `~/.config/gemini-suite/config.toml`
+*   **Purpose:** Unified configuration for CLI, Daemons (HAPPE, IDA, mcp-hostd).
+*   **Managed by:** `gemini config` or `gemini daemon-manager config` subcommands.
+*   **Details:** See `cli/README.md` and `daemon-manager/README.md`.
 
 ### MCP Server Configuration (`mcp_servers.json`)
 
-*   **Location:** `~/.config/gemini-cli/mcp_servers.json`
-*   **Content:** Defines how the MCP host (either `mcp-hostd` daemon or the one embedded in the CLI) should connect to MCP servers (built-in or external).
-*   **Format:** JSON array of server objects. See the `gemini-mcp` README for details.
-*   **Management:** Edit the file manually. The `install.sh` script may set up initial entries for built-in servers.
+*   **Location:** `~/.config/gemini-suite/mcp_servers.json`
+*   **Purpose:** Defines how the MCP Host connects to external tool servers.
+*   **Managed by:** `gemini mcp` or `gemini daemon-manager mcp` subcommands.
 
 ### API Key Precedence 🔑
 
-1.  Value in `~/.config/gemini-cli/config.toml`.
+1.  Value in `~/.config/gemini-suite/config.toml`.
 2.  `GEMINI_API_KEY` environment variable.
 3.  Value in a `.env` file in the current working directory (or project root during development).
 
 ### System Prompt Precedence 🗣️
 
-1.  Value in `~/.config/gemini-cli/config.toml`.
+1.  Value in `~/.config/gemini-suite/config.toml`.
 2.  Default prompt embedded in the CLI.
 
 ## 💡 CLI Usage
@@ -256,14 +251,12 @@ mcpd logs
 
 ### Chat History
 
-*   History is saved to files in `~/.local/share/gemini-cli/history/`.
-*   To maintain history *across separate `gemini` commands*, the `GEMINI_SESSION_ID` environment variable must be set (the wrapper function helps manage this).
-*   Use `--new-chat` to start fresh, `--disable-history` to temporarily ignore/not save history.
-*   Long conversations are automatically summarized to manage token limits.
+*   History is saved to files in `~/.local/share/gemini-suite/history/`.
+*   Requires the wrapper function (installed by the installer) to work correctly across shell sessions.
 
 ### Memory Features
 
-Powered by `gemini-memory` and LanceDB (`~/.local/share/gemini-cli/memory.db`).
+Powered by `gemini-memory` and LanceDB (`~/.local/share/gemini-suite/memory.db`).
 
 *   **Memory Broker (`--enable-memory-broker` / `--disable-memory-broker`):** Automatically retrieves relevant past memories and adds them as context to your prompts.
 *   **Auto Memory (`--enable-auto-memory` / `--disable-auto-memory`):** Automatically extracts and saves key information from conversations.

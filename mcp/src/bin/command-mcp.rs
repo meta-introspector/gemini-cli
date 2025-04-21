@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 use std::error::Error;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::signal;
 use tokio::process::Command as AsyncCommand;
+use tokio::signal;
 
 // JSON-RPC 2.0 structures
 #[derive(Serialize, Deserialize, Debug)]
@@ -120,39 +120,45 @@ async fn send_response(
 
 // --- Functions for command execution ---
 async fn execute_command(
-    cmd: &str, 
-    args: &[String], 
+    cmd: &str,
+    args: &[String],
     working_dir: Option<&str>,
     timeout_secs: Option<u64>,
 ) -> Result<Value, Box<dyn Error + Send + Sync>> {
     info!("Executing command: {} {:?}", cmd, args);
-    
+
     let mut command = AsyncCommand::new(cmd);
     command.args(args);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    
+
     if let Some(dir) = working_dir {
         command.current_dir(dir);
     }
-    
+
     let mut child = command.spawn()?;
-    
-    let stdout_handle = child.stdout.take().expect("Child process stdout handle missing");
-    let stderr_handle = child.stderr.take().expect("Child process stderr handle missing");
-    
+
+    let stdout_handle = child
+        .stdout
+        .take()
+        .expect("Child process stdout handle missing");
+    let stderr_handle = child
+        .stderr
+        .take()
+        .expect("Child process stderr handle missing");
+
     let stdout_reader = BufReader::new(stdout_handle);
     let stderr_reader = BufReader::new(stderr_handle);
-    
+
     let mut stdout_lines = Vec::new();
     let mut stderr_lines = Vec::new();
-    
+
     // Create background tasks to read stdout and stderr
     let stdout_task = tokio::spawn(async move {
         let mut lines = Vec::new();
         let mut reader = stdout_reader;
         let mut line = String::new();
-        
+
         while let Ok(bytes) = reader.read_line(&mut line).await {
             if bytes == 0 {
                 break; // EOF
@@ -160,15 +166,15 @@ async fn execute_command(
             lines.push(line.clone());
             line.clear();
         }
-        
+
         lines
     });
-    
+
     let stderr_task = tokio::spawn(async move {
         let mut lines = Vec::new();
         let mut reader = stderr_reader;
         let mut line = String::new();
-        
+
         while let Ok(bytes) = reader.read_line(&mut line).await {
             if bytes == 0 {
                 break; // EOF
@@ -176,10 +182,10 @@ async fn execute_command(
             lines.push(line.clone());
             line.clear();
         }
-        
+
         lines
     });
-    
+
     // Set up timeout if specified
     let status = if let Some(timeout) = timeout_secs {
         match tokio::time::timeout(std::time::Duration::from_secs(timeout), child.wait()).await {
@@ -193,14 +199,14 @@ async fn execute_command(
     } else {
         child.wait().await?
     };
-    
+
     // Collect output from the background tasks
     stdout_lines = stdout_task.await?;
     stderr_lines = stderr_task.await?;
-    
+
     let stdout = stdout_lines.join("");
     let stderr = stderr_lines.join("");
-    
+
     Ok(json!({
         "exit_code": status.code(),
         "stdout": stdout,
@@ -221,24 +227,27 @@ async fn handle_tool_execute(params: Value) -> Result<Value, Box<dyn Error + Sen
             let cmd = arguments["command"]
                 .as_str()
                 .ok_or("Missing 'command' field in arguments")?;
-            
-            let args = arguments["args"].as_array()
-                .map(|arr| arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect::<Vec<String>>())
+
+            let args = arguments["args"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<String>>()
+                })
                 .unwrap_or_default();
-            
+
             let working_dir = arguments["working_dir"].as_str();
-            
+
             let timeout_secs = arguments["timeout_secs"].as_u64();
-            
+
             execute_command(cmd, &args, working_dir, timeout_secs).await
         }
         "get_environment_variable" => {
             let var_name = arguments["name"]
                 .as_str()
                 .ok_or("Missing 'name' field in arguments")?;
-            
+
             match std::env::var(var_name) {
                 Ok(value) => Ok(json!({
                     "value": value,
@@ -247,12 +256,10 @@ async fn handle_tool_execute(params: Value) -> Result<Value, Box<dyn Error + Sen
                 Err(_) => Ok(json!({
                     "value": null,
                     "exists": false
-                }))
+                })),
             }
         }
-        _ => {
-            Err(format!("Unknown tool: {}", tool_name).into())
-        }
+        _ => Err(format!("Unknown tool: {}", tool_name).into()),
     }
 }
 
@@ -266,7 +273,7 @@ async fn handle_request(
     match request.method.as_str() {
         "initialize" => {
             info!("Handling initialize request");
-            
+
             let server_info = ServerInfo {
                 name: "command-mcp".to_string(),
                 version: "1.0.0".to_string(),
@@ -304,9 +311,9 @@ async fn handle_request(
         }
         "mcp/tool/execute" => {
             info!("Handling mcp/tool/execute request");
-            
+
             let params = request.params.clone().unwrap_or(json!({}));
-            
+
             match handle_tool_execute(params).await {
                 Ok(result) => {
                     let response = Response {
@@ -355,7 +362,7 @@ async fn handle_request(
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Initialize logging
     env_logger::init();
-    
+
     info!("Starting command MCP server...");
 
     let mut stdout = BufWriter::new(tokio::io::stdout());
@@ -482,4 +489,4 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     info!("Command MCP server shutting down.");
     Ok(())
-} 
+}

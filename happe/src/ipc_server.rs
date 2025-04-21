@@ -104,57 +104,71 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<IpcServerState>) -
     let request: HappeQueryRequest = serde_json::from_slice(&msg_buf)?;
     debug!(query = %request.query, "Received IPC query request");
 
-    // Get or create a session
-    let session_id = request.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let mut session = get_or_create_session(&state.session_store, &session_id).await?;
-    
-    // Set session expiry to 24 hours from now
-    session.set_expiry(Utc::now() + Duration::hours(24));
+    // Check for special commands
+    let response = if request.query == "__LIST_SESSIONS__" {
+        // Return list of active sessions
+        handle_list_sessions(&state).await?
+    } else if request.query == "__PING__" {
+        // It's a ping request - just acknowledge it
+        HappeQueryResponse {
+            response: "PONG".to_string(),
+            session_id: request.session_id.clone(),
+            error: None,
+        }
+    } else {
+        // Regular query processing
+        // Get or create a session
+        let session_id = request.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let mut session = get_or_create_session(&state.session_store, &session_id).await?;
+        
+        // Set session expiry to 24 hours from now
+        session.set_expiry(Utc::now() + Duration::hours(24));
 
-    // Process the query
-    let response = match coordinator::process_query(
-        &state.config,
-        &state.mcp_client,
-        &state.gemini_client,
-        &session,
-        request.query.clone(),
-    )
-    .await
-    {
-        Ok(response_text) => {
-            // Create turn data and update session history
-            let turn = ConversationTurn {
-                user_query: request.query,
-                llm_response: response_text.clone(),
-                retrieved_memories: vec![],
-            };
-            
-            coordinator::update_session_history(&mut session, turn);
-            
-            // Save the session
-            if let Err(e) = state.session_store.save_session(session.clone()).await {
-                error!(error = %e, "Failed to save session");
-                // Continue despite error
-            }
-            
-            HappeQueryResponse {
-                response: response_text,
-                session_id: Some(session_id),
-                error: None,
-            }
-        },
-        Err(e) => {
-            error!(error = %e, "Failed to process query");
-            
-            // Save the session anyway to preserve any state changes
-            if let Err(save_err) = state.session_store.save_session(session.clone()).await {
-                error!(error = %save_err, "Failed to save session after query error");
-            }
-            
-            HappeQueryResponse {
-                response: String::new(),
-                session_id: Some(session_id),
-                error: Some(format!("Failed to process query: {}", e)),
+        // Process the query
+        match coordinator::process_query(
+            &state.config,
+            &state.mcp_client,
+            &state.gemini_client,
+            &session,
+            request.query.clone(),
+        )
+        .await
+        {
+            Ok(response_text) => {
+                // Create turn data and update session history
+                let turn = ConversationTurn {
+                    user_query: request.query,
+                    llm_response: response_text.clone(),
+                    retrieved_memories: vec![],
+                };
+                
+                coordinator::update_session_history(&mut session, turn);
+                
+                // Save the session
+                if let Err(e) = state.session_store.save_session(session.clone()).await {
+                    error!(error = %e, "Failed to save session");
+                    // Continue despite error
+                }
+                
+                HappeQueryResponse {
+                    response: response_text,
+                    session_id: Some(session_id),
+                    error: None,
+                }
+            },
+            Err(e) => {
+                error!(error = %e, "Failed to process query");
+                
+                // Save the session anyway to preserve any state changes
+                if let Err(save_err) = state.session_store.save_session(session.clone()).await {
+                    error!(error = %save_err, "Failed to save session after query error");
+                }
+                
+                HappeQueryResponse {
+                    response: String::new(),
+                    session_id: Some(session_id),
+                    error: Some(format!("Failed to process query: {}", e)),
+                }
             }
         }
     };
@@ -171,6 +185,24 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<IpcServerState>) -
 
     debug!("Sent IPC response");
     Ok(())
+}
+
+/// Handle listing active sessions
+async fn handle_list_sessions(state: &IpcServerState) -> Result<HappeQueryResponse> {
+    debug!("Handling list_sessions command");
+    
+    // Get all sessions from the session store
+    let sessions = state.session_store.list_sessions().await?;
+    
+    // Convert the sessions to a simple JSON array of session IDs
+    let session_ids: Vec<String> = sessions.into_iter().map(|s| s.id).collect();
+    let response_json = serde_json::to_string(&session_ids)?;
+    
+    Ok(HappeQueryResponse {
+        response: response_json,
+        session_id: None,
+        error: None,
+    })
 }
 
 /// Get an existing session or create a new one

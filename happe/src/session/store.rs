@@ -107,6 +107,9 @@ pub trait SessionStore: Send + Sync + Debug {
     
     /// Delete expired sessions
     async fn cleanup_expired_sessions(&self) -> Result<usize, SessionStoreError>;
+    
+    /// List all active (non-expired) sessions
+    async fn list_sessions(&self) -> Result<Vec<Session>, SessionStoreError>;
 }
 
 /// Type alias for Arc-wrapped SessionStore trait objects

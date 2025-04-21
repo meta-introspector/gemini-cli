@@ -19,7 +19,7 @@ impl McpHostClient {
     pub fn new(socket_path: PathBuf) -> Self {
         Self { socket_path }
     }
-    
+
     /// Helper function to determine the default socket path if none is provided
     pub fn get_default_socket_path() -> PathBuf {
         let base_dir = dirs::runtime_dir()
@@ -28,77 +28,91 @@ impl McpHostClient {
         let socket_dir = base_dir.join("gemini-cli");
         socket_dir.join("mcp-hostd.sock")
     }
-    
+
     /// Connect to the MCP host daemon and send a request
     async fn send_request(&self, request: DaemonRequest) -> Result<DaemonResponse> {
         // Connect to the Unix socket
-        let mut stream = UnixStream::connect(&self.socket_path).await
+        let mut stream = UnixStream::connect(&self.socket_path)
+            .await
             .map_err(|e| anyhow!("Failed to connect to MCP host daemon: {}", e))?;
-        
+
         // Serialize the request
         let request_bytes = serde_json::to_vec(&request)
             .map_err(|e| anyhow!("Failed to serialize request: {}", e))?;
-        
+
         // Send the length prefix followed by the data
-        stream.write_u32(request_bytes.len() as u32).await
+        stream
+            .write_u32(request_bytes.len() as u32)
+            .await
             .map_err(|e| anyhow!("Failed to write request length: {}", e))?;
-        
-        stream.write_all(&request_bytes).await
+
+        stream
+            .write_all(&request_bytes)
+            .await
             .map_err(|e| anyhow!("Failed to write request data: {}", e))?;
-        
+
         // Read the response length
-        let response_len = stream.read_u32().await
+        let response_len = stream
+            .read_u32()
+            .await
             .map_err(|e| anyhow!("Failed to read response length: {}", e))?;
-        
+
         // Read the response payload
         let mut buffer = vec![0u8; response_len as usize];
-        stream.read_exact(&mut buffer).await
+        stream
+            .read_exact(&mut buffer)
+            .await
             .map_err(|e| anyhow!("Failed to read response data: {}", e))?;
-        
+
         // Deserialize the response
         let response: DaemonResponse = serde_json::from_slice(&buffer)
             .map_err(|e| anyhow!("Failed to deserialize response: {}", e))?;
-        
+
         Ok(response)
     }
-    
+
     /// Get capabilities from the MCP host daemon
     pub async fn get_capabilities(&self) -> Result<ServerCapabilities> {
         let response = self.send_request(DaemonRequest::GetCapabilities).await?;
-        
+
         match response {
-            DaemonResponse { status: ResponseStatus::Success, payload: ResponsePayload::Result(DaemonResult::Capabilities(caps)) } => {
-                Ok(caps)
-            }
-            DaemonResponse { status: ResponseStatus::Error, payload: ResponsePayload::Error(error) } => {
-                Err(anyhow!("MCP host daemon error: {}", error.message))
-            }
-            _ => {
-                Err(anyhow!("Unexpected response from MCP host daemon"))
-            }
+            DaemonResponse {
+                status: ResponseStatus::Success,
+                payload: ResponsePayload::Result(DaemonResult::Capabilities(caps)),
+            } => Ok(caps),
+            DaemonResponse {
+                status: ResponseStatus::Error,
+                payload: ResponsePayload::Error(error),
+            } => Err(anyhow!("MCP host daemon error: {}", error.message)),
+            _ => Err(anyhow!("Unexpected response from MCP host daemon")),
         }
     }
-    
+
     /// Execute a tool via the MCP host daemon
-    pub async fn execute_tool(&self, server_name: &str, tool_name: &str, args: Value) -> Result<Value> {
-        let request = DaemonRequest::ExecuteTool { 
-            server: server_name.to_owned(), 
-            tool: tool_name.to_owned(), 
+    pub async fn execute_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        let request = DaemonRequest::ExecuteTool {
+            server: server_name.to_owned(),
+            tool: tool_name.to_owned(),
             args,
         };
-        
+
         let response = self.send_request(request).await?;
-        
+
         match response {
-            DaemonResponse { status: ResponseStatus::Success, payload: ResponsePayload::Result(DaemonResult::ExecutionOutput(output)) } => {
-                Ok(output)
-            }
-            DaemonResponse { status: ResponseStatus::Error, payload: ResponsePayload::Error(error) } => {
-                Err(anyhow!("Tool execution failed: {}", error.message))
-            }
-            _ => {
-                Err(anyhow!("Unexpected response from MCP host daemon"))
-            }
+            DaemonResponse {
+                status: ResponseStatus::Success,
+                payload: ResponsePayload::Result(DaemonResult::ExecutionOutput(output)),
+            } => Ok(output),
+            DaemonResponse {
+                status: ResponseStatus::Error,
+                payload: ResponsePayload::Error(error),
+            } => Err(anyhow!("Tool execution failed: {}", error.message)),
+            _ => Err(anyhow!("Unexpected response from MCP host daemon")),
         }
     }
 }
@@ -114,10 +128,13 @@ pub fn generate_tool_declarations(tools: &[gemini_core::rpc_types::Tool]) -> Too
                 tracing::warn!("Skipping tool with invalid name: {}", name);
                 return None;
             }
-            
+
             // Clone parameters and ensure the type field is set
-            let mut parameters = tool.parameters.clone().unwrap_or_else(|| serde_json::json!({}));
-            
+            let mut parameters = tool
+                .parameters
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({}));
+
             // Ensure parameters has a type field at the root level
             if let Some(obj) = parameters.as_object_mut() {
                 if !obj.contains_key("type") {
@@ -131,7 +148,7 @@ pub fn generate_tool_declarations(tools: &[gemini_core::rpc_types::Tool]) -> Too
                     "properties": {}
                 });
             }
-            
+
             Some(FunctionDeclaration {
                 name,
                 description: tool.description.clone(),
@@ -150,17 +167,16 @@ fn is_valid_function_name(name: &str) -> bool {
     if name.is_empty() || name.len() > 64 {
         return false;
     }
-    
+
     // First character must be a letter or underscore
     let first_char = name.chars().next().unwrap();
     if !first_char.is_alphabetic() && first_char != '_' {
         return false;
     }
-    
+
     // Rest of the characters must be alphanumeric, underscore, dash, or dot
-    name.chars().all(|c| {
-        c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
-    })
+    name.chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 /// Sanitize JSON schema for Gemini API
@@ -172,4 +188,4 @@ fn sanitize_json_schema(schema: Value) -> Value {
     // - Ensure all required fields are present
     // - Convert formats to supported ones
     schema
-} 
+}

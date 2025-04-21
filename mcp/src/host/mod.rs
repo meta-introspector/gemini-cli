@@ -46,6 +46,7 @@ impl McpHost {
         let mut init_tasks = Vec::new();
         let mut servers_map = HashMap::new(); // Temp map to build servers before locking
 
+        let mut failed_count = 0;
         for config_orig in configs {
             // Clone the config and immediately destructure it to avoid partial moves
             let McpServerConfig {
@@ -77,196 +78,101 @@ impl McpHost {
                 );
             }
 
-            match transport {
+            let init_future = match transport {
                 McpTransport::Stdio => {
-                    match ActiveServer::launch_stdio(&host.next_request_id, launch_config).await {
-                        Ok((active_server, init_future)) => {
-                            let server_name_task = active_server.config.name.clone();
-                            servers_map.insert(server_name_task.clone(), active_server);
-                            // Spawn a task to wait for the initialization result
-                            init_tasks.push(task::spawn(async move {
-                                match init_future.await {
-                                    Ok(Ok(_)) => {
-                                        info!("MCP Server '{server_name_task}' via Stdio initialized successfully.");
-                                        if std::env::var("DEBUG").is_ok() {
-                                            println!("MCP Server '{server_name_task}' initialized successfully.");
-                                        }
-                                        Ok(server_name_task)
-                                    }
-                                    Ok(Err(rpc_error)) => {
-                                        error!(
-                                            "MCP Server '{server_name_task}' via Stdio initialization failed: {rpc_error:?}",
-                                        );
-                                        println!("MCP Server '{server_name_task}' initialization failed: {rpc_error:?}");
-                                        Err(format!(
-                                            "Server '{server_name_task}' init failed"
-                                        ))
-                                    }
-                                    Err(timeout_error) => {
-                                        error!(
-                                            "MCP Server '{server_name_task}' via Stdio initialization timed out: {timeout_error}",
-                                        );
-                                        println!("MCP Server '{server_name_task}' initialization timed out: {timeout_error}");
-                                        Err(format!(
-                                            "Server '{server_name_task}' init timed out"
-                                        ))
-                                    }
-                                }
-                            }));
+                    match ActiveServer::launch_stdio(&host.next_request_id, launch_config.clone())
+                        .await
+                    {
+                        Ok((server, init_future)) => {
+                            servers_map.insert(server_name.clone(), server);
+                            init_future
                         }
                         Err(e) => {
-                            error!("Failed to launch MCP server '{server_name}' via Stdio: {e}");
-                            println!("Failed to launch MCP server '{server_name}': {e}");
+                            eprintln!("MCP Server '{}' initialization failed: {}", server_name, e);
+                            failed_count += 1;
+                            continue;
                         }
                     }
                 }
                 McpTransport::SSE { url, headers } => {
-                    info!("Connecting to MCP server '{server_name}' via SSE at {url}");
-                    // Launch SSE transport connection
                     match ActiveServer::launch_sse(
                         &host.next_request_id,
-                        launch_config,
+                        launch_config.clone(),
                         url.clone(),
                         headers.clone(),
                     )
                     .await
                     {
-                        Ok((active_server, init_future)) => {
-                            let server_name_task = active_server.config.name.clone();
-                            servers_map.insert(server_name_task.clone(), active_server);
-                            // Spawn a task to wait for the initialization result
-                            init_tasks.push(task::spawn(async move {
-                                match init_future.await {
-                                    Ok(Ok(_)) => {
-                                        info!("MCP Server '{server_name_task}' via SSE initialized successfully.");
-                                        Ok(server_name_task)
-                                    }
-                                    Ok(Err(rpc_error)) => {
-                                        error!("MCP Server '{server_name_task}' via SSE initialization failed: {rpc_error:?}");
-                                        Err(format!("Server '{server_name_task}' init failed"))
-                                    }
-                                    Err(timeout_error) => {
-                                        error!("MCP Server '{server_name_task}' via SSE initialization timed out: {timeout_error}");
-                                        Err(format!("Server '{server_name_task}' init timed out"))
-                                    }
-                                }
-                            }));
+                        Ok((server, init_future)) => {
+                            servers_map.insert(server_name.clone(), server);
+                            init_future
                         }
                         Err(e) => {
-                            error!("Failed to connect to MCP server '{server_name}' via SSE: {e}");
+                            eprintln!("MCP Server '{}' initialization failed: {}", server_name, e);
+                            failed_count += 1;
+                            continue;
                         }
                     }
                 }
                 McpTransport::WebSocket { url, headers } => {
-                    info!("Connecting to MCP server '{server_name}' via WebSocket at {url}");
-                    // Launch WebSocket transport connection
                     match ActiveServer::launch_websocket(
                         &host.next_request_id,
-                        launch_config,
+                        launch_config.clone(),
                         url.clone(),
                         headers.clone(),
                     )
                     .await
                     {
-                        Ok((active_server, init_future)) => {
-                            let server_name_task = active_server.config.name.clone();
-                            servers_map.insert(server_name_task.clone(), active_server);
-                            // Spawn a task to wait for the initialization result
-                            init_tasks.push(task::spawn(async move {
-                                match init_future.await {
-                                    Ok(Ok(_)) => {
-                                        info!("MCP Server '{server_name_task}' via WebSocket initialized successfully.");
-                                        Ok(server_name_task)
-                                    }
-                                    Ok(Err(rpc_error)) => {
-                                        error!("MCP Server '{server_name_task}' via WebSocket initialization failed: {rpc_error:?}");
-                                        Err(format!("Server '{server_name_task}' init failed"))
-                                    }
-                                    Err(timeout_error) => {
-                                        error!("MCP Server '{server_name_task}' via WebSocket initialization timed out: {timeout_error}");
-                                        Err(format!("Server '{server_name_task}' init timed out"))
-                                    }
-                                }
-                            }));
+                        Ok((server, init_future)) => {
+                            servers_map.insert(server_name.clone(), server);
+                            init_future
                         }
                         Err(e) => {
-                            error!("Failed to connect to MCP server '{server_name}' via WebSocket: {e}");
+                            eprintln!("MCP Server '{}' initialization failed: {}", server_name, e);
+                            failed_count += 1;
+                            continue;
                         }
                     }
                 }
-            }
+            };
+
+            init_tasks.push((server_name, init_future));
         }
 
-        // Move successfully launched servers into the main map
-        host.servers.lock().await.extend(servers_map);
-
-        // Wait for initialization results (with a timeout)
-        let results = futures::future::join_all(init_tasks).await;
-
-        let mut failed_servers = Vec::new();
-        let mut successful_servers = Vec::new(); // Keep track of successes
-
-        for result in results {
-            match result {
-                Ok(Ok(server_name)) => {
-                    info!("Server '{}' initialized successfully.", server_name);
-                    successful_servers.push(server_name);
+        // Wait for all servers to initialize
+        let mut init_errors = Vec::new();
+        for (server_name, init_future) in init_tasks {
+            match init_future.await {
+                Ok(result) => {
+                    if let Err(e) = result {
+                        eprintln!("Initialization error: Server '{}' init failed", server_name);
+                        init_errors.push(format!("Server '{}' init failed", server_name));
+                        failed_count += 1;
+                    }
                 }
-                Ok(Err(e)) => {
-                    error!("Initialization error: {}", e);
-                    println!("Initialization error: {}", e);
-                    failed_servers.push(e); // Collect errors
-                }
-                Err(join_error) => {
-                    error!("Join error waiting for server init: {}", join_error);
-                    println!("Join error waiting for server init: {}", join_error);
-                    failed_servers.push(format!("Join error: {}", join_error));
+                Err(_) => {
+                    eprintln!(
+                        "Initialization error: Server '{}' init timed out",
+                        server_name
+                    );
+                    init_errors.push(format!("Server '{}' init timed out", server_name));
+                    failed_count += 1;
                 }
             }
         }
 
-        // Remove failed servers from the host's map
+        // Move servers to the host's map
         {
-            let mut servers_guard = host.servers.lock().await;
-            let failed_server_names: Vec<String> = servers_guard
-                .keys()
-                .filter(|name| !successful_servers.contains(name))
-                .cloned()
-                .collect();
-
-            for name in failed_server_names {
-                warn!(
-                    "Removing server '{}' from active list due to initialization failure.",
-                    name
-                );
-                servers_guard.remove(&name);
-                // Optionally trigger shutdown/cleanup for the failed server instance here if needed
-            }
+            let mut host_servers = host.servers.lock().await;
+            *host_servers = servers_map;
         }
 
-        // Log warnings but don't return an error
-        if !failed_servers.is_empty() {
-            warn!(
-                "{} MCP servers failed to initialize: {:?}",
-                failed_servers.len(),
-                failed_servers
-            );
-            println!(
+        if failed_count > 0 {
+            eprintln!(
                 "Warning: {} MCP servers failed to initialize and will be unavailable.",
-                failed_servers.len()
+                failed_count
             );
         }
-
-        if host.servers.lock().await.is_empty() {
-            warn!("No MCP servers initialized successfully.");
-            // Decide if we should error out if NO servers are available.
-            // For now, let the host start even with zero servers.
-        }
-
-        info!(
-            "MCP Host initialized with {} active servers.",
-            host.servers.lock().await.len()
-        );
 
         Ok(host)
     }

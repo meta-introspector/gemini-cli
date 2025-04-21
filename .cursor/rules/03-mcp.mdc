@@ -13,7 +13,7 @@ MCP allows Gemini to use external tools and services. This is primarily handled 
     *   Can run embedded within the CLI.
     *   Can run as a standalone daemon: `mcp-hostd` ([mcp/src/bin/mcp-hostd.rs](mdc:mcp/src/bin/mcp-hostd.rs)).
 *   **MCP Servers:** External processes providing tools (capabilities). The host connects to them based on configuration.
-    *   **Configuration:** Defined in `~/.config/gemini-cli/mcp_servers.json`. Specifies server name, transport (stdio, sse, websocket), command to launch (for stdio), etc. See [mcp/README.md](mdc:mcp/README.md) for format.
+    *   **Configuration:** Defined in `~/.config/gemini-suite/mcp_servers.json`. Specifies server name, transport (stdio, sse, websocket), command to launch (for stdio), etc. See [mcp/README.md](mdc:mcp/README.md) for format.
     *   **Transports:** Supports `Stdio`, `SSE`, and `WebSocket`.
     *   **Communication:** Uses JSON-RPC 2.0.
 *   **Built-in Servers:** The source code for common servers is included within `gemini-mcp`:

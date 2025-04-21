@@ -1,107 +1,37 @@
 use dirs;
+use gemini_core::config::{get_mcp_servers_config_path, UnifiedConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct McpServerConfig {
-    pub name: String,
-    pub enabled: bool,
-    pub transport: McpTransport,
-    // Use Vec<String> for command + args to handle spaces correctly
-    pub command: Vec<String>,
-    // Additional args, appended to command
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    // Tools that should run without confirmation
-    #[serde(default)]
-    pub auto_execute: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum McpTransport {
-    Stdio,
-    SSE {
-        url: String,
-        headers: Option<HashMap<String, String>>,
-    },
-    WebSocket {
-        url: String,
-        headers: Option<HashMap<String, String>>,
-    },
-}
+// Re-export the McpServerConfig and McpTransport from core
+pub use gemini_core::config::{McpServerConfig, McpTransport};
 
 pub fn get_config_dir() -> Result<PathBuf, String> {
-    dirs::config_dir()
-        .map(|dir| dir.join("gemini-cli"))
-        .ok_or_else(|| "Could not determine config directory".to_string())
+    // Use gemini-core's function to get the config directory
+    let unified_config_path = gemini_core::config::get_unified_config_path()
+        .map_err(|e| format!("Could not determine unified config path: {}", e))?;
+
+    // Get the parent directory of the unified config file
+    let config_dir = unified_config_path
+        .parent()
+        .ok_or_else(|| "Could not determine config directory from unified config path".to_string())?
+        .to_path_buf();
+
+    Ok(config_dir)
 }
 
 pub fn get_mcp_config_path() -> io::Result<PathBuf> {
-    get_config_dir()
+    // Use gemini-core's function to get the MCP servers config path
+    gemini_core::config::get_mcp_servers_config_path()
         .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))
-        .map(|path| path.join("mcp_servers.json"))
 }
 
 pub fn load_mcp_servers() -> Result<Vec<McpServerConfig>, String> {
-    let config_path =
-        get_mcp_config_path().map_err(|e| format!("Error finding MCP config path: {}", e))?;
-
-    if !config_path.exists() {
-        // It's okay if the file doesn't exist, just return an empty list.
-        return Ok(Vec::new());
-    }
-
-    let content = std::fs::read_to_string(&config_path).map_err(|e| {
-        format!(
-            "Error reading MCP config file {}: {}",
-            config_path.display(),
-            e
-        )
-    })?;
-
-    if content.trim().is_empty() {
-        // Handle empty file
-        return Ok(Vec::new());
-    }
-
-    // First try parsing as a Vec<McpServerConfig> (older format)
-    let servers_vec_result: Result<Vec<McpServerConfig>, _> = serde_json::from_str(&content);
-    
-    if let Ok(servers) = servers_vec_result {
-        // Filter out disabled servers
-        let enabled_servers = servers.into_iter().filter(|s| s.enabled).collect();
-        return Ok(enabled_servers);
-    }
-    
-    // If that fails, try parsing as an object with a "servers" field (newer format)
-    #[derive(serde::Deserialize)]
-    struct ServersContainer {
-        servers: Vec<McpServerConfig>,
-    }
-    
-    let servers_container_result: Result<ServersContainer, _> = serde_json::from_str(&content);
-    
-    match servers_container_result {
-        Ok(container) => {
-            // Filter out disabled servers
-            let enabled_servers = container.servers.into_iter().filter(|s| s.enabled).collect();
-            Ok(enabled_servers)
-        }
-        Err(e) => {
-            // Both parsing attempts failed, return error with original error message
-            Err(format!(
-                "Error parsing MCP config file {}: {}",
-                config_path.display(),
-                e
-            ))
-        }
-    }
+    // Use gemini-core's function to load MCP servers
+    gemini_core::config::load_mcp_servers(None)
+        .map_err(|e| format!("Error loading MCP servers: {}", e))
 }
 
 #[cfg(test)]

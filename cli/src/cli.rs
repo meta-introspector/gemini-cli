@@ -13,6 +13,14 @@ pub struct Args {
     #[arg(short, long, default_value_t = false)]
     pub interactive: bool,
 
+    /// Start a new session, ignoring any existing session ID
+    #[arg(long, default_value_t = false)]
+    pub new_session: bool,
+
+    /// List active sessions and let the user select one
+    #[arg(long, default_value_t = false)]
+    pub select_session: bool,
+
     /// Specify the path to the HAPPE daemon IPC socket
     #[arg(long, env = "HAPPE_IPC_PATH")]
     pub happe_ipc_path: Option<PathBuf>,
