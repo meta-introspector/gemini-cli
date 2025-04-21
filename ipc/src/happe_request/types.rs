@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct HappeQueryRequest {
     /// The query text from the user/client
     pub query: String,
+    /// Optional session ID to maintain conversation context
+    pub session_id: Option<String>,
 }
 
 /// A response from the HAPPE daemon to a client
@@ -14,4 +16,6 @@ pub struct HappeQueryResponse {
     pub response: String,
     /// Optional error message if something went wrong
     pub error: Option<String>,
-} 
+    /// Session ID used for this conversation
+    pub session_id: Option<String>,
+}

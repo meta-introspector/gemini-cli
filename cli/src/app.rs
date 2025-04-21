@@ -11,6 +11,7 @@ use crate::output::print_happe_response;
 /// Runs a single query mode, sending one prompt to the HAPPE daemon and displaying the response
 pub async fn run_single_query(prompt: String, happe_client: &HappeClient) -> Result<()> {
     info!("Running single query: {}", prompt);
+    info!("Using session ID: {}", happe_client.session_id());
 
     // Display a spinner while waiting for response
     let spinner = ProgressBar::new_spinner();
@@ -27,13 +28,18 @@ pub async fn run_single_query(prompt: String, happe_client: &HappeClient) -> Res
     match happe_client.send_query(prompt).await {
         Ok(response) => {
             spinner.finish_and_clear();
-            
+
             if let Some(error) = response.error {
                 error!("HAPPE error: {}", error);
                 println!("Error: {}", error);
                 return Ok(());
             }
-            
+
+            // Log session ID if one was returned
+            if let Some(session_id) = &response.session_id {
+                debug!("Response session ID: {}", session_id);
+            }
+
             print_happe_response(&response.response);
         }
         Err(e) => {
@@ -49,6 +55,7 @@ pub async fn run_single_query(prompt: String, happe_client: &HappeClient) -> Res
 /// Runs an interactive chat session with the HAPPE daemon
 pub async fn run_interactive_chat(happe_client: &HappeClient) -> Result<()> {
     println!("Starting interactive chat session with HAPPE daemon.");
+    println!("Session ID: {}", happe_client.session_id().blue());
     println!("Type 'exit' or 'quit' to end the session.");
     println!();
 
@@ -89,13 +96,19 @@ pub async fn run_interactive_chat(happe_client: &HappeClient) -> Result<()> {
         match happe_client.send_query(input.to_string()).await {
             Ok(response) => {
                 spinner.finish_and_clear();
-                
+
                 if let Some(error) = response.error {
                     error!("HAPPE error: {}", error);
                     println!("Error: {}", error);
                     continue;
                 }
-                
+
+                // Log session ID if one was returned
+                if let Some(session_id) = &response.session_id {
+                    debug!("Response session ID: {}", session_id);
+                    // We don't need to update our session ID as the client will track it
+                }
+
                 print_happe_response(&response.response);
             }
             Err(e) => {
