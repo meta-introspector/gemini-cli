@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use gemini_core::config::{get_mcp_servers_config_path, get_unified_config_path, UnifiedConfig};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 // Constants for default configuration content

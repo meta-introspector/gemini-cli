@@ -1,9 +1,7 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use dirs;
 use std::env;
-use std::path::PathBuf;
 use tracing::{debug, info};
 
 mod config;
