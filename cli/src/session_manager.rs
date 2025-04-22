@@ -31,7 +31,7 @@ impl SessionManager {
                 let parts: Vec<&str> = session_id.split('_').collect();
                 if parts.len() >= 3 {
                     let terminal_id = parts[1];
-                    let timestamp = parts[2];
+                    let _timestamp = parts[2];
                     println!("  {}. {} (Terminal {})", i + 1, session_id.blue(), terminal_id);
                 } else {
                     println!("  {}. {}", i + 1, session_id.blue());

@@ -6,7 +6,6 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use toml;
 use which::which;
 
 // Enum for representing daemon status
@@ -225,7 +224,7 @@ fn process_exists(pid: i32) -> bool {
 // Helper function to kill a process
 fn kill_process(pid: i32) -> Result<()> {
     let status = Command::new("kill")
-        .arg(&pid.to_string())
+        .arg(pid.to_string())
         .status()
         .with_context(|| format!("Failed to execute kill command for PID {}", pid))?;
 

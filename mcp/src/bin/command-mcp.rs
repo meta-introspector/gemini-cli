@@ -150,8 +150,8 @@ async fn execute_command(
     let stdout_reader = BufReader::new(stdout_handle);
     let stderr_reader = BufReader::new(stderr_handle);
 
-    let mut stdout_lines = Vec::new();
-    let mut stderr_lines = Vec::new();
+    let mut _stdout_lines = Vec::new();
+    let mut _stderr_lines = Vec::new();
 
     // Create background tasks to read stdout and stderr
     let stdout_task = tokio::spawn(async move {
@@ -201,11 +201,11 @@ async fn execute_command(
     };
 
     // Collect output from the background tasks
-    stdout_lines = stdout_task.await?;
-    stderr_lines = stderr_task.await?;
+    _stdout_lines = stdout_task.await?;
+    _stderr_lines = stderr_task.await?;
 
-    let stdout = stdout_lines.join("");
-    let stderr = stderr_lines.join("");
+    let stdout = _stdout_lines.join("");
+    let stderr = _stderr_lines.join("");
 
     Ok(json!({
         "exit_code": status.code(),

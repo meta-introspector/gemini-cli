@@ -67,6 +67,7 @@ struct GeminiGenerationConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct GeminiResponse {
     candidates: Vec<GeminiCandidate>,
     #[serde(default)]
@@ -81,6 +82,7 @@ struct GeminiCandidate {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct GeminiResponseContent {
     parts: Vec<GeminiResponsePart>,
     role: String,
@@ -179,7 +181,7 @@ impl LLMClient for GeminiClient {
 
         let response = self
             .http_client
-            .post(&self.api_url())
+            .post(self.api_url())
             .json(&request)
             .send()
             .await
@@ -269,6 +271,7 @@ struct OllamaOptions {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OllamaResponse {
     model: String,
     created_at: String,
@@ -351,7 +354,7 @@ impl LLMClient for OllamaClient {
 
         let response = self
             .http_client
-            .post(&self.api_url())
+            .post(self.api_url())
             .json(&request)
             .send()
             .await
@@ -394,6 +397,7 @@ impl LLMClient for OllamaClient {
 
 /// OpenAI API client
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct OpenAIClient {
     api_key: String,
     model_name: String,
@@ -419,6 +423,7 @@ struct OpenAIMessage<'a> {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OpenAIResponse {
     id: String,
     object: String,
@@ -429,6 +434,7 @@ struct OpenAIResponse {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OpenAIChoice {
     index: u32,
     message: OpenAIResponseMessage,
@@ -436,12 +442,14 @@ struct OpenAIChoice {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OpenAIResponseMessage {
     role: String,
     content: String,
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -449,11 +457,13 @@ struct OpenAIUsage {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OpenAIErrorResponse {
     error: OpenAIError,
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OpenAIError {
     message: String,
     #[serde(rename = "type")]
@@ -537,7 +547,7 @@ impl LLMClient for OpenAIClient {
 
         let response = self
             .http_client
-            .post(&self.api_url())
+            .post(self.api_url())
             .json(&request)
             .send()
             .await
@@ -591,6 +601,7 @@ impl LLMClient for OpenAIClient {
 
 /// Anthropic API client
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AnthropicClient {
     api_key: String,
     model_name: String,
@@ -609,6 +620,7 @@ struct AnthropicRequest {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct AnthropicResponse {
     completion: String,
     stop_reason: String,
@@ -616,11 +628,13 @@ struct AnthropicResponse {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct AnthropicErrorResponse {
     error: AnthropicError,
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct AnthropicError {
     type_: String,
     message: String,

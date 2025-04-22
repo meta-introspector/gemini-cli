@@ -10,9 +10,7 @@ use lancedb::query::*;
 use lancedb::{connect, Connection as LanceConnection, Table as LanceTable};
 use serde_json::{self, json};
 use std::fmt;
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
@@ -23,6 +21,18 @@ use crate::config::{ensure_memory_db_dir, get_memory_db_path};
 use crate::schema::create_schema;
 // Import arrow_conversion functions needed
 use crate::arrow_conversion;
+use futures::future::BoxFuture;
+
+/// Alias for the complex function type used for embedding generation
+type EmbeddingFn = Arc<
+    dyn Fn(
+        String,
+        EmbeddingModelVariant,
+        Option<Arc<dyn McpHostInterface + Send + Sync>>,
+    ) -> BoxFuture<'static, Result<Vec<f32>>>
+        + Send
+        + Sync,
+>;
 
 /// MemoryStore manages a collection of Memory items using LanceDB.
 // #[derive(Debug)] // Removed derive
@@ -164,30 +174,19 @@ impl MemoryStore {
         };
         let id = Uuid::new_v4();
 
-        // Define embedding generation closure with explicit type
-        let generate_embedding_fn: Arc<
-            dyn Fn(
-                    String,
-                    EmbeddingModelVariant,
-                    Option<Arc<dyn McpHostInterface + Send + Sync>>,
-                ) -> Pin<
-                    Box<dyn Future<Output = Result<Vec<f32>, anyhow::Error>> + Send + 'static>,
-                > + Send
-                + Sync,
-        > = Arc::new(
-            move |text: String,
-                  model: EmbeddingModelVariant,
-                  host: Option<Arc<dyn McpHostInterface + Send + Sync>>| {
-                // Box the future immediately
+        // Create the embedding generation function (could be passed in)
+        let generate_embedding_fn: EmbeddingFn = Arc::new(
+            |text, variant, mcp_client| -> BoxFuture<'static, Result<Vec<f32>>> {
+                // Box the async block to satisfy the Fn trait
                 Box::pin(async move {
-                    let dimension = model.dimension();
-                    if host.is_none() {
+                    let dimension = variant.dimension();
+                    if mcp_client.is_none() {
                         warn!("[Closure] No MCP host. Using zeros.");
                         return Ok(vec![0.0; dimension]);
                     }
-                    let mcp = host.as_ref().unwrap();
+                    let mcp = mcp_client.as_ref().unwrap();
                     let params =
-                        json!({ "text": text, "is_query": false, "variant": model.as_str() });
+                        json!({ "text": text, "is_query": false, "variant": variant.as_str() });
                     match mcp.execute_tool("embedding", "embed", params).await {
                         Ok(result) => {
                             let embedding = result
@@ -289,7 +288,7 @@ impl MemoryStore {
         let stream = query.execute().await?;
         // Convert RecordBatchStream to our expected return type
         let mapped_stream =
-            stream.map(|batch_result| batch_result.map_err(|e| anyhow::Error::from(e)));
+            stream.map(|batch_result| batch_result.map_err(anyhow::Error::from));
         Ok(Box::pin(mapped_stream))
     }
 

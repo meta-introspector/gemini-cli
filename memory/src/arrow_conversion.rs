@@ -191,7 +191,7 @@ pub(crate) fn batch_to_memories(batch: &RecordBatch) -> Result<Vec<Memory>> {
         .as_list_opt::<i32>() // Use helper for Option<ListArray>
         .ok_or_else(|| anyhow!("Failed to cast 'tags' column"))?;
     // Ensure the inner type of the list is String
-    let _tags_value_array_type = match tags_array.value_type() {
+    match tags_array.value_type() {
         DataType::Utf8 => Ok(()),
         other => Err(anyhow!(
             "Expected Utf8 for tags list items, found {:?}",
@@ -223,7 +223,7 @@ pub(crate) fn batch_to_memories(batch: &RecordBatch) -> Result<Vec<Memory>> {
         .as_list_opt::<i32>()
         .ok_or_else(|| anyhow!("Failed to cast 'related_keys' column"))?;
     // Ensure the inner type of the list is String
-    let _related_keys_value_array_type = match related_keys_array.value_type() {
+    match related_keys_array.value_type() {
         DataType::Utf8 => Ok(()),
         other => Err(anyhow!(
             "Expected Utf8 for related_keys list items, found {:?}",

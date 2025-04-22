@@ -143,7 +143,7 @@ impl McpHost {
         for (server_name, init_future) in init_tasks {
             match init_future.await {
                 Ok(result) => {
-                    if let Err(e) = result {
+                    if let Err(_e) = result {
                         eprintln!("Initialization error: Server '{}' init failed", server_name);
                         init_errors.push(format!("Server '{}' init failed", server_name));
                         failed_count += 1;

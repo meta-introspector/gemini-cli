@@ -325,7 +325,7 @@ fn check_and_prompt_for_config_value(
 
     // Check if the key exists and its value is non-empty
     let needs_update = match get_value_mut(&mut config_value, key_path) {
-        Some(value) => value.as_str().map_or(true, |s| s.trim().is_empty()),
+        Some(value) => value.as_str().is_none_or(|s| s.trim().is_empty()),
         None => true, // Key path doesn't exist
     };
 
@@ -636,10 +636,9 @@ fn install_binary(bin_name: &str, install_dir: &Path) -> Result<()> {
                 }
             };
 
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    info!("  {}", entry.path().display());
-                }
+            // Use flatten to simplify iteration over Ok results
+            for entry in entries.flatten() {
+                info!("  {}", entry.path().display());
             }
         } else {
             info!("Directory {} does not exist", dir_path.display());
@@ -1079,12 +1078,10 @@ fn update_all(
     for daemon in daemons {
         if update_daemons || (update_manager_tool && daemon.bin_name == "mcp-hostd") {
             stop_daemon_if_running(daemon, &runtime_dir)?;
-        } else {
-            if daemon.bin_name == "mcp-hostd" {
-                // Always stop mcpd if updating MCP servers
-                info!("Stopping MCP Host Daemon to allow MCP server binary updates...");
-                stop_daemon_if_running(daemon, &runtime_dir)?;
-            }
+        } else if daemon.bin_name == "mcp-hostd" {
+            // Always stop mcpd if updating MCP servers
+            info!("Stopping MCP Host Daemon to allow MCP server binary updates...");
+            stop_daemon_if_running(daemon, &runtime_dir)?;
         }
     }
     info!("Daemon check complete.");
@@ -1218,7 +1215,7 @@ fn remove_shell_function(path: &Path, start_marker: &str, end_marker: &str) -> R
 
 fn append_to_shell_config(path: &Path, content: &str) -> Result<()> {
     let mut file = OpenOptions::new()
-        .write(true)
+        
         .append(true)
         .create(true)
         .open(path)?;

@@ -6,6 +6,12 @@ use log::{debug, warn};
 
 use crate::session::store::{Session, SessionStore, SessionStoreError};
 
+impl Default for InMemorySessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// In-memory implementation of SessionStore
 #[derive(Debug)]
 pub struct InMemorySessionStore {

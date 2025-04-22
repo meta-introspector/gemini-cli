@@ -13,8 +13,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
-use tokio::task;
 use tokio::time::{error::Elapsed, Duration};
+use tokio::sync::oneshot;
+use tokio::task;
 
 // ActiveServer manages an active MCP server connection
 #[derive(Clone, Debug)]
@@ -25,10 +26,10 @@ pub(crate) struct ActiveServer {
     pub capabilities: Arc<Mutex<Option<ServerCapabilities>>>,
 
     // Channel to send requests to the server
-    request_tx: mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>,
+    _request_tx: mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>,
 
     // Channel to send notifications to the server
-    notification_tx: mpsc::Sender<Notification>,
+    _notification_tx: mpsc::Sender<Notification>,
 
     // For stdio transport only: handle to child process
     #[allow(dead_code)] // Used in take_process but clippy doesn't see it
@@ -37,9 +38,6 @@ pub(crate) struct ActiveServer {
     // Flag to indicate shutdown in progress
     shutdown: Arc<AtomicBool>,
 }
-
-// Use tokio oneshot for request/response
-use tokio::sync::oneshot;
 
 // Define a concrete future type for the initialization future
 type InitFuture = Pin<Box<dyn Future<Output = Result<Result<(), JsonRpcError>, Elapsed>> + Send>>;
@@ -55,6 +53,12 @@ struct PendingRequest {
     responder: oneshot::Sender<Result<Response, JsonRpcError>>,
     method: String, // For debugging/logging
 }
+
+/// Type alias for the channel used to send requests to a server process/task
+type ServerRequestChannel = mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>;
+
+// Type alias for the channel receiver
+type ServerRequestReceiver = mpsc::Receiver<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>;
 
 impl ActiveServer {
     // Create a new server with stdio transport
@@ -102,10 +106,7 @@ impl ActiveServer {
             .ok_or_else(|| format!("Server '{}': Failed to get stderr", server_name))?;
 
         // Create channels for communication
-        let (_request_tx, mut _request_rx): (
-            mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>,
-            _,
-        ) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (_request_tx, mut _request_rx): (ServerRequestChannel, ServerRequestReceiver) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         let (_notification_tx, mut _notification_rx): (mpsc::Sender<Notification>, _) =
             mpsc::channel(CHANNEL_BUFFER_SIZE);
         let (_stdin_tx, mut _stdin_rx): (mpsc::Sender<String>, _) =
@@ -323,11 +324,11 @@ impl ActiveServer {
 
                                                                 // Send response back
                                                                 debug!("Stdout({}): Sending response for ID {} back to requester.", server_name_stdout, id);
-                                                                if let Err(_) = pending
-                                                                    .responder
-                                                                    .send(Ok(response))
-                                                                {
-                                                                    warn!("Stdout({}): Failed to send response for ID {} back to requester (receiver dropped).", server_name_stdout, id);
+                                                                if !pending.responder.is_closed() && pending.responder.send(Ok(response)).is_err() {
+                                                                    error!(
+                                                                        "Failed to send response for req ID {}, receiver likely dropped",
+                                                                        id
+                                                                    );
                                                                 }
                                                             } else {
                                                                 warn!("Stdout({}): Received response for unknown or timed-out request ID: {}", server_name_stdout, id);
@@ -595,8 +596,8 @@ impl ActiveServer {
         let server = ActiveServer {
             config,
             capabilities: _capabilities.clone(),
-            request_tx: _request_tx,
-            notification_tx: _notification_tx,
+            _request_tx,
+            _notification_tx,
             process: _process_arc,
             shutdown: _shutdown,
         };
@@ -760,10 +761,7 @@ impl ActiveServer {
             .ok_or_else(|| format!("Server '{}': Failed to get stderr", server_name))?;
 
         // Create channels for communication
-        let (_request_tx, mut _request_rx): (
-            mpsc::Sender<(Request, oneshot::Sender<Result<Response, JsonRpcError>>)>,
-            _,
-        ) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (_request_tx, mut _request_rx): (ServerRequestChannel, ServerRequestReceiver) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         let (_notification_tx, mut _notification_rx): (mpsc::Sender<Notification>, _) =
             mpsc::channel(CHANNEL_BUFFER_SIZE);
         let (_stdin_tx, mut _stdin_rx): (mpsc::Sender<String>, _) =
@@ -981,11 +979,11 @@ impl ActiveServer {
 
                                                                 // Send response back
                                                                 debug!("Stdout({}): Sending response for ID {} back to requester.", server_name_stdout, id);
-                                                                if let Err(_) = pending
-                                                                    .responder
-                                                                    .send(Ok(response))
-                                                                {
-                                                                    warn!("Stdout({}): Failed to send response for ID {} back to requester (receiver dropped).", server_name_stdout, id);
+                                                                if !pending.responder.is_closed() && pending.responder.send(Ok(response)).is_err() {
+                                                                    error!(
+                                                                        "Failed to send response for req ID {}, receiver likely dropped",
+                                                                        id
+                                                                    );
                                                                 }
                                                             } else {
                                                                 warn!("Stdout({}): Received response for unknown or timed-out request ID: {}", server_name_stdout, id);
@@ -1253,8 +1251,8 @@ impl ActiveServer {
         let server = ActiveServer {
             config,
             capabilities: _capabilities.clone(),
-            request_tx: _request_tx,
-            notification_tx: _notification_tx,
+            _request_tx,
+            _notification_tx,
             process: _process_arc,
             shutdown: _shutdown,
         };
@@ -1379,7 +1377,7 @@ impl ActiveServer {
         let (resp_tx, resp_rx) = oneshot::channel();
 
         // Send the request to the handler task
-        self.request_tx
+        self._request_tx
             .send((request, resp_tx))
             .await
             .map_err(|_| JsonRpcError {
@@ -1398,7 +1396,7 @@ impl ActiveServer {
 
     // Send a notification to the server (no response expected)
     pub(crate) async fn send_notification(&self, notification: Notification) -> Result<(), String> {
-        self.notification_tx
+        self._notification_tx
             .send(notification)
             .await
             .map_err(|_| "Failed to send notification to server".to_string())

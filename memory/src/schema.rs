@@ -30,13 +30,17 @@ impl EmbeddingModelVariant {
             Self::Large => "large",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for EmbeddingModelVariant {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "small" => Some(Self::Small),
-            "base" => Some(Self::Base),
-            "large" => Some(Self::Large),
-            _ => None,
+            "small" => Ok(Self::Small),
+            "base" => Ok(Self::Base),
+            "large" => Ok(Self::Large),
+            _ => Err(anyhow::anyhow!("Invalid embedding model variant: {}", s)),
         }
     }
 }

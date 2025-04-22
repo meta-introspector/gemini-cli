@@ -76,7 +76,7 @@ pub async fn process_query(
         gemini_client,
         contents, // Pass the constructed Vec<Content>
         &system_prompt,
-        tools.as_ref().map(|v| &**v),
+        tools.as_deref(),
     )
     .await
     {
@@ -216,7 +216,7 @@ fn construct_prompt(query: &str, memories: &[MemoryItem]) -> Vec<Content> {
             memory_text.push_str(&format!("{}. {}\n", i + 1, mem.content));
         }
 
-        memory_text.push_str("\n");
+        memory_text.push('\n');
         content_parts.push(Content {
             parts: vec![Part::text(memory_text)],
             role: Some("user".to_string()),

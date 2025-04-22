@@ -30,14 +30,12 @@ pub struct McpServer {
     pub transport: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "command")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub command_string: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "command", default)]
-    pub command_array: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub args: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub env: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -65,7 +63,8 @@ pub struct ClaudeServer {
 // Claude-compatible format with servers as a map
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClaudeServersConfig {
-    pub mcpServers: HashMap<String, ClaudeServer>,
+    #[serde(rename = "mcpServers")]
+    pub mcp_servers: HashMap<String, ClaudeServer>,
 }
 
 // Get path to MCP servers configuration file
@@ -111,22 +110,21 @@ fn read_mcp_config() -> Result<McpServers> {
             let claude_format_result: Result<ClaudeServersConfig, _> =
                 serde_json::from_str(&content);
 
-            if let Ok(claude_format) = claude_format_result {
+            if let Ok(mut claude_format) = claude_format_result {
                 tracing::debug!("Successfully parsed mcp_servers.json as Claude format");
                 // Convert to our internal format
                 let mut servers = Vec::new();
 
-                for (name, server) in claude_format.mcpServers {
+                for (name, server) in claude_format.mcp_servers.drain() {
                     servers.push(McpServer {
                         name,
                         transport: "stdio".to_string(), // Claude format assumes stdio
                         connection: None,
                         command_string: Some(server.command),
-                        command_array: None,
-                        enabled: server.enabled.or(Some(true)), // Default to enabled if not specified
                         args: Some(server.args),
                         env: Some(server.env),
                         auto_execute: Some(Vec::new()), // Claude format doesn't specify auto_execute
+                        enabled: server.enabled,
                     });
                 }
 
@@ -187,7 +185,7 @@ fn write_mcp_config(servers: &McpServers) -> Result<()> {
             .clone()
             .or_else(|| {
                 server
-                    .command_array
+                    .args
                     .as_ref()
                     .and_then(|cmd| cmd.first().cloned())
             })
@@ -196,7 +194,7 @@ fn write_mcp_config(servers: &McpServers) -> Result<()> {
         let args = server.args.clone().unwrap_or_else(|| {
             // If we have a command array with more than one element, use all but the first as args
             server
-                .command_array
+                .args
                 .as_ref()
                 .map(|cmd| {
                     if cmd.len() > 1 {
@@ -222,7 +220,7 @@ fn write_mcp_config(servers: &McpServers) -> Result<()> {
     }
 
     let claude_config = ClaudeServersConfig {
-        mcpServers: claude_servers,
+        mcp_servers: claude_servers,
     };
 
     // Serialize in the Claude-compatible format
@@ -306,10 +304,9 @@ pub async fn enable_server(name: &str) -> Result<()> {
                     name: name.to_string(),
                     transport: "stdio".to_string(),
                     command_string: Some(command_str.clone()),
-                    command_array: None,
+                    args: Some(Vec::new()),
                     connection: None,
                     enabled: Some(true),
-                    args: Some(Vec::new()),
                     env: Some(HashMap::new()),
                     auto_execute: Some(vec![]),
                 });
@@ -349,10 +346,9 @@ pub async fn disable_server(name: &str) -> Result<()> {
                     name: name.to_string(),
                     transport: "stdio".to_string(),
                     command_string: Some(command_str.clone()),
-                    command_array: None,
+                    args: Some(Vec::new()),
                     connection: None,
                     enabled: Some(false),
-                    args: Some(Vec::new()),
                     env: Some(HashMap::new()),
                     auto_execute: Some(vec![]),
                 });
@@ -493,7 +489,6 @@ pub async fn install_server(path: &str, custom_name: Option<String>) -> Result<S
         command_string: Some(command),
         connection: None,
         enabled: Some(true),
-        command_array: None,
         args: Some(args),
         env: Some(HashMap::new()),
         auto_execute: Some(Vec::new()),

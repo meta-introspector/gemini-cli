@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use gemini_core::config::UnifiedConfig;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
 /// Get the path for the LanceDB database directory from unified config.
@@ -28,7 +28,7 @@ pub fn get_memory_db_path() -> Result<PathBuf> {
 }
 
 /// Ensure the directory for the LanceDB database exists.
-pub fn ensure_memory_db_dir(db_path: &PathBuf) -> Result<()> {
+pub fn ensure_memory_db_dir(db_path: &Path) -> Result<()> {
     if let Some(parent) = db_path.parent() {
         // LanceDB connect creates the final directory, ensure parent exists
         std::fs::create_dir_all(parent)

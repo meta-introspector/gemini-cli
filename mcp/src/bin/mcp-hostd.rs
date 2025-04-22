@@ -1,4 +1,3 @@
-use env_logger;
 use gemini_ipc::daemon_messages::{
     BrokerCapabilities, DaemonRequest, DaemonResponse, DaemonResult, ToolDefinition,
 };
@@ -305,16 +304,13 @@ async fn process_request(request: DaemonRequest, host: Arc<McpHost>) -> DaemonRe
     match request {
         DaemonRequest::GetCapabilities => {
             info!("Processing GetCapabilities request");
-            match host.get_all_capabilities().await {
-                caps => {
-                    info!(
-                        "Retrieved capabilities for {} tools and {} resources",
-                        caps.tools.len(),
-                        caps.resources.len()
-                    );
-                    DaemonResponse::success(DaemonResult::Capabilities(caps))
-                }
-            }
+            let caps = host.get_all_capabilities().await;
+            info!(
+                "Retrieved capabilities for {} tools and {} resources",
+                caps.tools.len(),
+                caps.resources.len()
+            );
+            DaemonResponse::success(DaemonResult::Capabilities(caps))
         }
         DaemonRequest::ExecuteTool { server, tool, args } => {
             info!(

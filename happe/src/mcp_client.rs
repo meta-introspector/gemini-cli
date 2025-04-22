@@ -178,14 +178,3 @@ fn is_valid_function_name(name: &str) -> bool {
     name.chars()
         .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
-
-/// Sanitize JSON schema for Gemini API
-fn sanitize_json_schema(schema: Value) -> Value {
-    // Gemini has stricter requirements for JSON schema than some MCP servers might provide
-    // This is a simple implementation that keeps the schema as-is
-    // In a real implementation, you might want to:
-    // - Remove unsupported keywords
-    // - Ensure all required fields are present
-    // - Convert formats to supported ones
-    schema
-}

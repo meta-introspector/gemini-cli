@@ -1,55 +1,22 @@
 use anyhow::{anyhow, Context, Result};
 use gemini_core::config::{get_mcp_servers_config_path, get_unified_config_path, UnifiedConfig};
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
+use serde::Deserialize;
 
-// Constants for default configuration content
-const DEFAULT_MCP_SERVERS_CONFIG: &str = r#"{
-  "servers": []
-}"#;
+// Minimal definition for the section needed by the manager
+#[allow(dead_code)] // Fields might be used later or are part of a broader pattern
+#[derive(Deserialize, Debug)]
+struct GeminiApiConfigSection {
+    api_key: Option<String>,
+}
 
-const DEFAULT_GEMINI_CONFIG: &str = r#"# Gemini CLI Configuration
-
-[api]
-key = ""
-model = "gemini-1.5-pro"
-
-[system]
-prompt = ""
-
-[features]
-history = true
-memory = true
-"#;
-
-// Gets path to the unified configuration file or component-specific configuration
-fn get_config_path(component: &str) -> Result<PathBuf> {
-    if component == "unified" {
-        return get_unified_config_path()
-            .map_err(|e| anyhow!("Could not get unified config path: {}", e));
-    } else if component == "mcp-servers" {
-        return get_mcp_servers_config_path()
-            .map_err(|e| anyhow!("Could not get MCP servers config path: {}", e));
-    }
-
-    // For backward compatibility, support old component-specific files
-    // But they should be phased out in favor of the unified config
-    let config_dir = get_unified_config_path()
-        .map_err(|e| anyhow!("Could not get unified config path: {}", e))?
-        .parent()
-        .ok_or_else(|| anyhow!("Could not determine parent directory of unified config"))?
-        .to_path_buf();
-
-    let path = match component {
-        "cli" | "gemini-cli" => config_dir.join("cli.toml"),
-        "happe" => config_dir.join("happe.toml"),
-        "ida" => config_dir.join("ida.toml"),
-        "mcp-hostd" => config_dir.join("mcp-hostd.toml"),
-        _ => return Err(anyhow!("Unknown component: {}", component)),
-    };
-
-    Ok(path)
+// This struct is intentionally simplified for the manager
+#[allow(dead_code)] // Fields might be used later or are part of a broader pattern
+#[derive(Deserialize, Debug)]
+struct Config {
+    #[serde(rename = "gemini-api")]
+    gemini_api: Option<GeminiApiConfigSection>,
 }
 
 // Get default configuration content for a component

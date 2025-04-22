@@ -68,7 +68,7 @@ pub fn convert_mcp_tools_to_gemini_functions(tools: &[Tool]) -> Vec<FunctionDef>
         functions.push(FunctionDef {
             name: gemini_function_name,
             description: Some(description),
-            parameters: parameters,
+            parameters,
         });
     }
 
@@ -85,12 +85,10 @@ pub fn sanitize_json_schema(mut schema: Value) -> Value {
         obj.remove("additionalProperties");
 
         // Process nested properties if any
-        if let Some(props_obj) = obj.get_mut("properties") {
-            if let Value::Object(props_map) = props_obj {
-                for (_, prop_value) in props_map.iter_mut() {
-                    // Recursively sanitize each property
-                    *prop_value = sanitize_json_schema(prop_value.clone());
-                }
+        if let Some(Value::Object(props_map)) = obj.get_mut("properties") {
+            for (_, prop_value) in props_map.iter_mut() {
+                // Recursively sanitize each property
+                *prop_value = sanitize_json_schema(prop_value.clone());
             }
         }
 
@@ -136,7 +134,7 @@ pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String
             let display_name = tool.name.replace("/", ".");
             prompt.push_str(&format!("* **{}**: {}\n", display_name, description));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
 
     // Add Resources Section
@@ -149,7 +147,7 @@ pub fn build_mcp_system_prompt(tools: &[Tool], resources: &[Resource]) -> String
                 .unwrap_or_else(|| "No description provided".to_string());
             prompt.push_str(&format!("* **{}**: {}\n", resource.name, resource_desc));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
 
     // Add specific instructions for common tools

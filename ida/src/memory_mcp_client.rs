@@ -70,9 +70,7 @@ pub async fn retrieve_memories(
     );
 
     // Construct a prompt for the broker LLM to help select the most relevant memories
-    let mut prompt = format!(
-        "You are a memory broker responsible for selecting the most relevant context for answering a user query.\n\n"
-    );
+    let mut prompt = "You are a memory broker responsible for selecting the most relevant context for answering a user query.\n\n".to_string();
 
     prompt.push_str(&format!("USER QUERY: {}\n\n", query));
     
@@ -203,7 +201,7 @@ pub fn format_memories_for_prompt(memories: &[MemoryItem], max_token_estimate: u
         total_tokens += tokens;
     }
 
-    result.push_str("\n");
+    result.push('\n');
     result
 }
 

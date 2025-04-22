@@ -517,7 +517,7 @@ pub fn save_mcp_servers(
     let mut claude_servers = HashMap::new();
 
     for server in servers {
-        let command = server.command.get(0).cloned().unwrap_or_default();
+        let command = server.command.first().cloned().unwrap_or_default();
 
         claude_servers.insert(
             server.name.clone(),

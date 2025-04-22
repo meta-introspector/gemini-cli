@@ -121,6 +121,12 @@ struct Resource {
 /// This is used by the communication with the web UI.
 pub struct CommandServer {}
 
+impl Default for CommandServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandServer {
     pub fn new() -> Self {
         CommandServer {}

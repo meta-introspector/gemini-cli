@@ -134,7 +134,7 @@ async fn read_message<'a>(
             for c in line_buffer[start_pos..].chars() {
                 if c.is_ascii_digit() {
                     digits_only.push(c);
-                } else if !c.is_whitespace() && digits_only.len() > 0 {
+                } else if !c.is_whitespace() && !digits_only.is_empty() {
                     // Stop at first non-digit, non-whitespace after we've seen digits
                     break;
                 }
@@ -157,13 +157,22 @@ async fn read_message<'a>(
                                 "Found content after headers in the same read: '{}'",
                                 content_part.escape_debug()
                             );
-                            if content_part.len() == len {
-                                debug!("Content length matches expected length, returning message");
-                                return Ok(Some(content_part.to_string()));
-                            } else if content_part.len() < len {
-                                // Partial content, but we can't read more if we're about to encounter EOF
-                                debug!("Partial content found, but might be all we have");
-                                return Ok(Some(content_part.to_string()));
+                            // Use cmp for clearer comparison logic
+                            match content_part.len().cmp(&len) {
+                                std::cmp::Ordering::Equal => {
+                                    debug!("Content length matches expected length, returning message");
+                                    return Ok(Some(content_part.to_string()));
+                                }
+                                std::cmp::Ordering::Less => {
+                                    // Partial content, but we can't read more if we're about to encounter EOF
+                                    debug!("Partial content found, but might be all we have");
+                                    return Ok(Some(content_part.to_string()));
+                                }
+                                std::cmp::Ordering::Greater => {
+                                    // This case wasn't explicitly handled before. Log a warning and return what we have.
+                                    warn!("Content part length {} is greater than expected len {}, returning partial.", content_part.len(), len);
+                                    return Ok(Some(content_part.to_string()));
+                                }
                             }
                         }
                     }
@@ -189,72 +198,77 @@ async fn read_message<'a>(
 
                 if let Some(length) = content_length {
                     // We already know the content length from the header
-                    if possible_content_part.len() == length {
-                        // We have the exact full content
-                        debug!("Content length matches, returning full message");
-                        return Ok(Some(possible_content_part.to_string()));
-                    } else if possible_content_part.len() < length {
-                        // We have partial content, read the rest
-                        debug!(
-                            "Partial content ({}/{}), reading the rest",
-                            possible_content_part.len(),
-                            length
-                        );
-                        content_buffer.clear();
-                        content_buffer.extend_from_slice(possible_content_part.as_bytes());
+                    // Use cmp for clearer comparison logic
+                    match possible_content_part.len().cmp(&length) {
+                        std::cmp::Ordering::Equal => {
+                            // We have the exact full content
+                            debug!("Content length matches, returning full message");
+                            return Ok(Some(possible_content_part.to_string()));
+                        }
+                        std::cmp::Ordering::Less => {
+                            // We have partial content, read the rest
+                            debug!(
+                                "Partial content ({}/{}), reading the rest",
+                                possible_content_part.len(),
+                                length
+                            );
+                            content_buffer.clear();
+                            content_buffer.extend_from_slice(possible_content_part.as_bytes());
 
-                        // Read remaining bytes
-                        let remaining_bytes = length - possible_content_part.len();
-                        let mut remaining_buffer = vec![0; remaining_bytes];
+                            // Read remaining bytes
+                            let remaining_bytes = length - possible_content_part.len();
+                            let mut remaining_buffer = vec![0; remaining_bytes];
 
-                        // Try to read the remaining bytes, but handle EOF gracefully
-                        match reader.read_exact(&mut remaining_buffer).await {
-                            Ok(_) => {
-                                // Combine the content
-                                content_buffer.extend_from_slice(&remaining_buffer);
-                                match String::from_utf8(content_buffer.clone()) {
-                                    Ok(json_str) => {
-                                        debug!("Successfully read JSON content: {}", json_str);
-                                        return Ok(Some(json_str));
-                                    }
-                                    Err(e) => {
-                                        error!("Invalid UTF-8 in content: {}", e);
-                                        return Err(ReadMessageError::Io(tokio::io::Error::new(
-                                            std::io::ErrorKind::InvalidData,
-                                            format!("Invalid UTF-8 in content: {}", e),
-                                        )));
+                            // Try to read the remaining bytes, but handle EOF gracefully
+                            match reader.read_exact(&mut remaining_buffer).await {
+                                Ok(_) => {
+                                    // Combine the content
+                                    content_buffer.extend_from_slice(&remaining_buffer);
+                                    match String::from_utf8(content_buffer.clone()) {
+                                        Ok(json_str) => {
+                                            debug!("Successfully read JSON content: {}", json_str);
+                                            return Ok(Some(json_str));
+                                        }
+                                        Err(e) => {
+                                            error!("Invalid UTF-8 in content: {}", e);
+                                            return Err(ReadMessageError::Io(tokio::io::Error::new(
+                                                std::io::ErrorKind::InvalidData,
+                                                format!("Invalid UTF-8 in content: {}", e),
+                                            )));
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                                // Handle EOF by returning what we have so far
-                                debug!("EOF while reading content, returning partial content");
-                                match String::from_utf8(content_buffer.clone()) {
-                                    Ok(json_str) => {
-                                        return Ok(Some(json_str));
-                                    }
-                                    Err(e) => {
-                                        error!("Invalid UTF-8 in partial content: {}", e);
-                                        return Err(ReadMessageError::Io(tokio::io::Error::new(
-                                            std::io::ErrorKind::InvalidData,
-                                            format!("Invalid UTF-8 in content: {}", e),
-                                        )));
+                                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                                    // Handle EOF by returning what we have so far
+                                    debug!("EOF while reading content, returning partial content");
+                                    match String::from_utf8(content_buffer.clone()) {
+                                        Ok(json_str) => {
+                                            return Ok(Some(json_str));
+                                        }
+                                        Err(e) => {
+                                            error!("Invalid UTF-8 in partial content: {}", e);
+                                            return Err(ReadMessageError::Io(tokio::io::Error::new(
+                                                std::io::ErrorKind::InvalidData,
+                                                format!("Invalid UTF-8 in content: {}", e),
+                                            )));
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                return Err(ReadMessageError::Io(e));
+                                Err(e) => {
+                                    return Err(ReadMessageError::Io(e));
+                                }
                             }
                         }
-                    } else {
-                        // We have more data than expected, this is unusual
-                        warn!(
-                            "Received more data than expected Content-Length ({} > {})",
-                            possible_content_part.len(),
-                            length
-                        );
-                        // Just return the expected length
-                        return Ok(Some(possible_content_part[..length].to_string()));
+                        std::cmp::Ordering::Greater => {
+                            // We have more data than expected, this is unusual
+                            warn!(
+                                "Received more data than expected Content-Length ({} > {})",
+                                possible_content_part.len(),
+                                length
+                            );
+                            // Just return the expected length
+                            return Ok(Some(possible_content_part[..length].to_string()));
+                        }
                     }
                 }
             }
@@ -480,7 +494,7 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
                 .unwrap_or_default();
 
             // Create timestamp
-            let timestamp = chrono::Utc::now();
+            let _timestamp = chrono::Utc::now();
 
             // Store memory using add_memory instead of store_memory
             memory_store
@@ -596,10 +610,14 @@ async fn handle_tool_execute(params: Value, memory_store: &MemoryStore) -> Resul
 
 // Helper function to format Unix timestamp to RFC3339
 fn format_timestamp(unix_timestamp: u64) -> String {
-    let datetime = chrono::DateTime::<chrono::Utc>::from_utc(
-        chrono::NaiveDateTime::from_timestamp_opt(unix_timestamp as i64, 0).unwrap_or_default(),
-        chrono::Utc,
-    );
+    let datetime = match chrono::DateTime::from_timestamp(unix_timestamp as i64, 0) {
+        Some(dt) => dt,
+        None => {
+            // Handle the error case, e.g., return a default timestamp or panic
+            warn!("Invalid Unix timestamp received: {}", unix_timestamp);
+            chrono::DateTime::<chrono::Utc>::MIN_UTC // Or some other sensible default
+        }
+    };
     datetime.to_rfc3339()
 }
 

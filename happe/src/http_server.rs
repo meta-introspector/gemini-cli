@@ -3,7 +3,7 @@ use crate::mcp_client::McpHostClient;
 use gemini_core::config::HappeConfig;
 use crate::session::{InMemorySessionStore, Session, SessionStoreRef};
 use axum::{
-    extract::{Extension, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
