@@ -1,13 +1,14 @@
 use clap::Parser;
 use gemini_core::client::GeminiClient;
-use gemini_core::config::UnifiedConfig;
+use gemini_core::config::{UnifiedConfig, HappeConfig, get_unified_config_path};
 use gemini_happe::http_server;
 use gemini_happe::ipc_server;
 use gemini_happe::mcp_client::McpHostClient;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
+use std::path::PathBuf;
+use std::fs; // Added for create_dir_all
 
 #[derive(Parser, Debug)]
 #[command(name = "happe-daemon", about = "HAPPE daemon for Gemini Suite")]
@@ -53,6 +54,17 @@ struct Args {
     mcp_socket: Option<PathBuf>,
 }
 
+// Helper function to determine the MCP socket path (mirrors mcp-hostd logic)
+fn get_dynamic_mcp_socket_path() -> anyhow::Result<PathBuf> {
+    let base_dir = dirs::runtime_dir()
+        .or_else(dirs::data_local_dir)
+        .ok_or_else(|| anyhow::anyhow!("Could not determine runtime or data local directory"))?;
+    let socket_dir = base_dir.join("gemini-cli"); // Consistent directory name
+    fs::create_dir_all(&socket_dir) // Ensure the directory exists
+        .map_err(|e| anyhow::anyhow!("Failed to create socket directory: {}", e))?;
+    Ok(socket_dir.join("mcp-hostd.sock")) // Consistent socket filename
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize logging
@@ -66,13 +78,21 @@ async fn main() -> anyhow::Result<()> {
     // Parse command line args
     let args = Args::parse();
 
-    // --- Load Unified Configuration --- 
-    let unified_config = UnifiedConfig::load(); // Load the single source of truth
-    // --- --- 
-
-    // --- Extract HAPPE specific settings, applying CLI overrides --- 
-    // Start with HAPPE config from unified structure (it's not an Option)
-    let mut config = unified_config.happe; // Removed .unwrap_or_default()
+    // Determine which HAPPE config to use: component-specific if given, else unified
+    let unified_config = UnifiedConfig::load();
+    let mut config: HappeConfig = if let Some(path) = args.config.clone() {
+        // Load component-specific HAPPE config file
+        let content = std::fs::read_to_string(&path)?;
+        let cfg: HappeConfig = toml::from_str(&content)?;
+        info!("Loaded HAPPE configuration from {}", path.display());
+        cfg
+    } else {
+        // Load from the unified configuration file
+        let cfg_path = get_unified_config_path()
+            .map_err(|e| anyhow::anyhow!("Could not determine unified config path: {}", e))?;
+        info!("LOADING HAPPE CONFIG FROM UNIFIED CONFIG FILE: {}", cfg_path.display());
+        unified_config.happe.clone()
+    };
 
     // Override with CLI args if provided
     if let Some(ida_socket) = args.ida_socket {
@@ -91,7 +111,6 @@ async fn main() -> anyhow::Result<()> {
     if args.no_http {
         config.http_enabled = Some(false);
     }
-    // --- --- 
 
     // --- Extract Gemini settings from unified config, applying CLI overrides --- 
     let mut gemini_config = unified_config.gemini_api; // Removed .unwrap_or_default()
@@ -104,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
     // --- --- 
 
     // --- Extract MCP settings from unified config, applying CLI overrides --- 
-    let mut mcp_config = unified_config.mcp; // Removed .unwrap_or_default()
+    let mut mcp_config = unified_config.mcp;
     if let Some(mcp_socket) = args.mcp_socket {
         mcp_config.mcp_host_socket_path = Some(mcp_socket);
     }
@@ -122,15 +141,27 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Initialize MCP host client using the resolved MCP config
-    let mcp_socket_path = mcp_config
-        .mcp_host_socket_path
-        .ok_or_else(|| anyhow::anyhow!("MCP Host socket path not configured"))?;
+    // Determine and initialize MCP host client socket path
+    let mcp_socket_path = match mcp_config.mcp_host_socket_path {
+        Some(path) => {
+            info!("Using configured MCP host daemon socket path: {}", path.display());
+            path
+        }
+        None => {
+            info!("MCP host socket path not configured, attempting dynamic resolution...");
+            match get_dynamic_mcp_socket_path() {
+                Ok(path) => {
+                    info!("Dynamically resolved MCP host daemon socket path: {}", path.display());
+                    path
+                }
+                Err(e) => {
+                     error!("Failed to dynamically resolve MCP host socket path: {}", e);
+                     return Err(e); // Propagate the error
+                }
+            }
+        }
+    };
 
-    info!(
-        "Using MCP host daemon socket at {}",
-        mcp_socket_path.display()
-    );
     let mcp_client = McpHostClient::new(mcp_socket_path);
 
     // Test connection to MCP host daemon

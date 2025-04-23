@@ -500,57 +500,62 @@ fn install_all(
     create_shell_wrappers: bool,
     install_manager_tool: bool,
 ) -> Result<()> {
-    info!("Preparing for full installation...");
+    info!("Starting installation...");
+
+    // 1. Stop running daemons (if any)
     let runtime_dir = get_runtime_dir()?;
-    info!("Checking for and stopping running daemons...");
     for daemon in daemons {
         stop_daemon_if_running(daemon, &runtime_dir)?;
     }
-    info!("Daemon check complete.");
 
-    // Build all binaries
-    build_binaries(true)?;
+    // 2. Build necessary binaries
+    build_binaries(install_manager_tool)?;
 
-    // Install core binaries
+    // 3. Install CLI binary
     install_binary("gemini-cli", install_dir)?;
+
+    // 4. Install Daemon binaries
     for daemon in daemons {
         install_binary(&daemon.bin_name, install_dir)?;
     }
-    for server in mcp_servers {
-        install_binary(server, install_dir)?;
-    }
 
-    // Add this line to create symlinks for daemons
-    create_daemon_symlinks(install_dir, daemons)?;
-
-    // Install manager tool if requested
+    // 5. Install Manager Tool (if requested)
     if install_manager_tool {
         install_manager(install_dir)?;
+    } else {
+        info!("Skipping gemini-manager installation.");
     }
 
-    // Create shell wrappers
-    if create_shell_wrappers {
-        create_cli_wrapper(install_dir, config_dir)?;
+    // 6. Copy python_mcp directory
+    let python_mcp_source_path = PathBuf::from("python_mcp");
+    if python_mcp_source_path.is_dir() {
+        // Install python scripts into a subdir, e.g., install_dir/python_mcp
+        let python_mcp_dest_path = install_dir.join("python_mcp");
+        info!(
+            "Copying Python MCP server implementation to {}...",
+            python_mcp_dest_path.display()
+        );
+        copy_dir_all(&python_mcp_source_path, &python_mcp_dest_path)?;
+    } else {
+        warn!(
+            "Source directory 'python_mcp' not found, skipping Python MCP server installation."
+        );
     }
 
-    // Install unified configuration (will also create mcp_servers.json)
+    // 7. Create/Update Unified Configuration
     install_unified_config(install_dir, config_dir, mcp_servers)?;
 
-    // Check and prompt for essential config values
-    info!("Checking configuration values...");
-    check_and_prompt_for_config_value(
-        &config_dir.join("config.toml"),
-        &["gemini-api", "api_key"],
-        "Enter your Gemini API Key:",
-    )?;
-    info!("Configuration checks complete.");
+    // 8. Ensure install_dir is in PATH
+    ensure_path_contains(install_dir)?;
 
-    info!("Installation complete!");
-    info!("For CLI usage, reload your shell and type: gemini \"your prompt\"");
-    if install_manager_tool {
-        info!("Manage daemons and servers with: gemini-manager <command>");
+    // 9. Create shell wrappers (if requested)
+    if create_shell_wrappers {
+        create_cli_wrapper(install_dir, config_dir)?;
+    } else {
+        info!("Skipping shell wrapper creation.");
     }
 
+    info!("Installation completed successfully!");
     Ok(())
 }
 
@@ -563,9 +568,6 @@ fn build_binaries(build_manager: bool) -> Result<()> {
         "mcp-hostd",
         "happe-daemon",
         "ida-daemon",
-        "filesystem-mcp",
-        "command-mcp",
-        "memory-store-mcp",
     ];
 
     if build_manager {
@@ -758,7 +760,7 @@ fn install_unified_config(
     let config_path = config_dir.join("config.toml");
     let mcp_config_path = config_dir.join("mcp_servers.json"); // Define path for MCP JSON
 
-    // Only create the config if it doesn't exist
+    // Create default unified config if it doesn't exist
     if !config_path.exists() {
         info!("Unified config.toml not found. Creating default...");
         // Determine default socket paths based on runtime directory
@@ -865,106 +867,60 @@ storage_path = "{}/memory/models"
             "Created default unified config.toml at {}",
             config_path.display()
         );
-
-        // Create the default mcp_servers.json file separately with the newer format
-        // Use Claude-compatible format with mcpServers object
-        let mut mcp_server_map = std::collections::HashMap::new();
-
-        for &server_name in mcp_servers {
-            let server_path = install_dir.join(server_name);
-            let auto_execute = match server_name {
-                "memory-store-mcp" => vec![
-                    "store_memory".to_string(),
-                    "list_all_memories".to_string(),
-                    "retrieve_memory_by_key".to_string(),
-                    "retrieve_memory_by_tag".to_string(),
-                    "delete_memory_by_key".to_string(),
-                ],
-                "embedding-server-mcp" => vec!["get_embeddings".to_string()],
-                _ => Vec::new(),
-            };
-
-            let mut env = std::collections::HashMap::new();
-            env.insert("GEMINI_MCP_TIMEOUT".to_string(), "120".to_string());
-
-            let server_config = serde_json::json!({
-                "command": server_path.to_string_lossy().to_string(),
-                "args": [],
-                "env": env,
-                "enabled": true,
-                "auto_execute": auto_execute
-            });
-
-            let name = server_name.trim_end_matches("-mcp").to_string();
-            mcp_server_map.insert(name, server_config);
-        }
-
-        let servers_container = serde_json::json!({
-            "mcpServers": mcp_server_map
-        });
-
-        let mcp_servers_json_content = serde_json::to_string_pretty(&servers_container)
-            .map_err(|e| anyhow!("Failed to serialize MCP server config to JSON: {}", e))?;
-        fs::write(&mcp_config_path, mcp_servers_json_content)?;
-        info!(
-            "Created default MCP server configuration at {}",
-            mcp_config_path.display()
-        );
     } else {
         info!(
             "Unified configuration already exists at {}",
             config_path.display()
         );
-        // Ensure mcp_servers.json also exists if config.toml does
-        if !mcp_config_path.exists() {
-            warn!("Unified config.toml exists, but mcp_servers.json is missing. Creating default.");
-
-            // Use Claude-compatible format with mcpServers object
-            let mut mcp_server_map = std::collections::HashMap::new();
-
-            for &server_name in mcp_servers {
-                let server_path = install_dir.join(server_name);
-                let auto_execute = match server_name {
-                    "memory-store-mcp" => vec![
-                        "store_memory".to_string(),
-                        "list_all_memories".to_string(),
-                        "retrieve_memory_by_key".to_string(),
-                        "retrieve_memory_by_tag".to_string(),
-                        "delete_memory_by_key".to_string(),
-                    ],
-                    "embedding-server-mcp" => vec!["get_embeddings".to_string()],
-                    _ => Vec::new(),
-                };
-
-                let mut env = std::collections::HashMap::new();
-                env.insert("GEMINI_MCP_TIMEOUT".to_string(), "120".to_string());
-
-                let server_config = serde_json::json!({
-                    "command": server_path.to_string_lossy().to_string(),
-                    "args": [],
-                    "env": env,
-                    "enabled": true,
-                    "auto_execute": auto_execute
-                });
-
-                let name = server_name.trim_end_matches("-mcp").to_string();
-                mcp_server_map.insert(name, server_config);
-            }
-
-            // Create the servers container object
-            let servers_container = serde_json::json!({
-                "mcpServers": mcp_server_map
-            });
-
-            let mcp_servers_json_content = serde_json::to_string_pretty(&servers_container)
-                .map_err(|e| anyhow!("Failed to serialize MCP server config to JSON: {}", e))?;
-            fs::write(&mcp_config_path, mcp_servers_json_content)?;
-            info!(
-                "Created default MCP server configuration at {}",
-                mcp_config_path.display()
-            );
-        }
     }
+    
+    // Always generate and write/overwrite mcp_servers.json during install/update
+    info!("Generating/Updating MCP server configuration at {}", mcp_config_path.display());
+    let mut mcp_server_configs = Vec::new();
+    for server_name in mcp_servers {
+        // Construct the path to the python script
+        let script_name = if *server_name == "memory-store-mcp" {
+            "memstore.py".to_string()
+        } else {
+            format!("{}_mcp.py", server_name.replace("-mcp", ""))
+        };
+        let script_path = install_dir.join("python_mcp").join("servers").join(&script_name);
+        
+        // Command is the explicit python3 interpreter path
+        let command = vec![
+            "/usr/bin/python3".to_string()
+        ];
+        // Argument is the script path
+        let args = vec![
+            script_path.to_string_lossy().to_string()
+        ];
+        
+        info!(
+            "Generating config for Python MCP server: {} -> Command: {:?}, Args: {:?}",
+            server_name,
+            command,
+            args
+        );
+
+        mcp_server_configs.push(McpServerConfigForJson {
+            name: server_name.to_string(),
+            enabled: true,
+            transport: "stdio".to_string(),
+            command,
+            args,   
+            env: std::collections::HashMap::new(),
+            auto_execute: vec![],
+        });
+    }
+
+    // Write the MCP server configuration JSON file directly as an array, overwriting if exists
+    let mcp_servers_json_content = serde_json::to_string_pretty(&mcp_server_configs)
+        .map_err(|e| anyhow!("Failed to serialize MCP server config to JSON: {}", e))?;
+    fs::write(&mcp_config_path, mcp_servers_json_content)?;
+    info!(
+        "Wrote MCP server configuration to {}",
+        mcp_config_path.display()
+    );
 
     Ok(())
 }
@@ -989,78 +945,80 @@ fn uninstall_all(
     force: bool,
     uninstall_manager_tool: bool,
 ) -> Result<()> {
-    info!("Uninstalling core components...");
-    // Remove core binaries
+    info!("Starting uninstallation...");
+
+    // 1. Stop running daemons
+    let runtime_dir = get_runtime_dir()?;
+    for daemon in daemons {
+        stop_daemon_if_running(daemon, &runtime_dir)?;
+    }
+
+    // 2. Remove CLI binary
     uninstall_binary("gemini-cli", install_dir)?;
+
+    // 3. Remove Daemon binaries
     for daemon in daemons {
         uninstall_binary(&daemon.bin_name, install_dir)?;
     }
-    for server in mcp_servers {
-        uninstall_binary(server, install_dir)?;
-    }
 
-    // Remove manager if requested
+    // 4. Remove Manager Tool (if requested)
     if uninstall_manager_tool {
         uninstall_manager(install_dir)?;
+    } else {
+        info!("Skipping gemini-manager uninstallation.");
     }
 
-    // Remove shell wrapper functions
-    let shell_config_path = get_shell_config_path()?;
-    info!(
-        "Removing shell wrapper functions from {}...",
-        shell_config_path.display()
-    );
-    remove_shell_function(
-        &shell_config_path,
-        "# Gemini CLI Wrapper Function Start",
-        "# Gemini CLI Wrapper Function End",
-    )?;
-    info!("Shell wrapper functions removed.");
-
-    // Remove configuration if force flag is set
-    if force {
-        if config_dir.exists() {
-            info!(
-                "Removing unified configuration directory (--force specified): {}",
-                config_dir.display()
-            );
-            fs::remove_dir_all(config_dir)?;
-            info!("Removed configuration directory: {}", config_dir.display());
+    // 5. Remove python_mcp directory
+    let python_mcp_dest_path = install_dir.join("python_mcp");
+    if python_mcp_dest_path.is_dir() {
+        info!("Removing Python MCP server directory: {}", python_mcp_dest_path.display());
+        if let Err(e) = fs::remove_dir_all(&python_mcp_dest_path) {
+            error!("Failed to remove {}: {}. Manual removal may be required.", python_mcp_dest_path.display(), e);
         } else {
-            info!(
-                "Configuration directory {} does not exist, skipping removal.",
-                config_dir.display()
-            );
+            info!("Removed {}.", python_mcp_dest_path.display());
         }
+    }
 
-        // Check for runtime data and remove if force is set
-        if let Ok(runtime_dir) = get_runtime_dir() {
-            if runtime_dir.exists() {
-                info!(
-                    "Removing runtime data directory (--force specified): {}",
-                    runtime_dir.display()
+    // 6. Remove shell wrapper (if it exists)
+    let shell_config_path = get_shell_config_path()?;
+    if shell_config_exists_with_pattern(&shell_config_path, "### BEGIN Gemini CLI Wrapper")? {
+        remove_shell_function(
+            &shell_config_path,
+            "### BEGIN Gemini CLI Wrapper",
+            "### END Gemini CLI Wrapper",
+        )?;
+    }
+
+    // 7. Remove Configuration Directory (if forced)
+    if force {
+        warn!(
+            "Force specified. Removing configuration directory: {}",
+            config_dir.display()
+        );
+        if config_dir.exists() {
+            if let Err(e) = fs::remove_dir_all(config_dir) {
+                error!(
+                    "Failed to remove configuration directory {}: {}. Manual removal may be required.",
+                    config_dir.display(),
+                    e
                 );
-                fs::remove_dir_all(&runtime_dir)?;
-                info!("Removed runtime data directory: {}", runtime_dir.display());
             } else {
                 info!(
-                    "Runtime data directory {} does not exist, skipping removal.",
-                    runtime_dir.display()
+                    "Removed configuration directory: {}",
+                    config_dir.display()
                 );
             }
         } else {
-            warn!("Could not determine runtime directory, skipping its removal.");
+            info!("Configuration directory not found, skipping removal.");
         }
     } else {
         info!(
-            "Configuration directory {} and runtime data were preserved.",
+            "Configuration directory {} not removed. Use --force to remove it.",
             config_dir.display()
         );
-        info!("Use the '--force' flag during uninstall to remove them.");
     }
 
-    info!("Uninstallation complete!");
-
+    info!("Uninstallation completed.");
     Ok(())
 }
 
@@ -1072,60 +1030,75 @@ fn update_all(
     update_daemons: bool,
     update_manager_tool: bool,
 ) -> Result<()> {
-    info!("Preparing for update...");
+    info!("Starting update...");
+
+    // 1. Stop running daemons (if updating them)
     let runtime_dir = get_runtime_dir()?;
-    info!("Checking for and stopping running daemons...");
-    for daemon in daemons {
-        if update_daemons || (update_manager_tool && daemon.bin_name == "mcp-hostd") {
-            stop_daemon_if_running(daemon, &runtime_dir)?;
-        } else if daemon.bin_name == "mcp-hostd" {
-            // Always stop mcpd if updating MCP servers
-            info!("Stopping MCP Host Daemon to allow MCP server binary updates...");
+    if update_daemons {
+        info!("Stopping daemons before update...");
+        for daemon in daemons {
             stop_daemon_if_running(daemon, &runtime_dir)?;
         }
+    } else {
+        info!("Skipping daemon stop/update.");
     }
-    info!("Daemon check complete.");
 
-    // Build binaries
+    // 2. Build necessary binaries
     build_binaries(update_manager_tool)?;
 
-    // Update binaries
+    // 3. Install/Update CLI binary
     install_binary("gemini-cli", install_dir)?;
+
+    // 4. Install/Update Daemon binaries (if requested)
     if update_daemons {
         for daemon in daemons {
             install_binary(&daemon.bin_name, install_dir)?;
         }
     } else {
-        // Even if not updating daemons, update MCP servers
-        info!("Updating MCP server binaries...");
-        for server in mcp_servers {
-            install_binary(server, install_dir)?;
-        }
+        info!("Skipping installation of daemon binaries.");
     }
 
-    // Update manager if requested
+    // 5. Install/Update Manager Tool (if requested)
     if update_manager_tool {
         install_manager(install_dir)?;
+    } else {
+        info!("Skipping gemini-manager update.");
     }
 
-    // Update shell wrappers
-    create_cli_wrapper(install_dir, config_dir)?;
+    // 6. Copy python_mcp directory
+    let python_mcp_source_path = PathBuf::from("python_mcp");
+    let python_mcp_dest_path = install_dir.join("python_mcp");
+    // Remove old version first
+    if python_mcp_dest_path.is_dir() {
+        info!("Removing old Python MCP server directory for update: {}", python_mcp_dest_path.display());
+        if let Err(e) = fs::remove_dir_all(&python_mcp_dest_path) {
+             error!("Failed to remove old {} during update: {}. Manual removal may be required.", python_mcp_dest_path.display(), e);
+             // Decide whether to proceed or error out. Let's proceed but warn.
+        }
+    }
+    // Copy new version
+    if python_mcp_source_path.is_dir() {
+        info!(
+            "Copying updated Python MCP server implementation to {}...",
+            python_mcp_dest_path.display()
+        );
+        copy_dir_all(&python_mcp_source_path, &python_mcp_dest_path)?;
+    } else {
+        warn!(
+            "Source directory 'python_mcp' not found, skipping Python MCP server update."
+        );
+    }
 
-    // Ensure unified config exists (will create if missing)
+    // 7. Create/Update Unified Configuration (Always run this to ensure paths are correct)
     install_unified_config(install_dir, config_dir, mcp_servers)?;
 
-    // Check and prompt for essential config values
-    info!("Checking configuration values...");
-    check_and_prompt_for_config_value(
-        &config_dir.join("config.toml"),
-        &["gemini-api", "api_key"],
-        "Enter your Gemini API Key:",
-    )?;
-    info!("Configuration checks complete.");
+    // 8. Ensure install_dir is in PATH
+    ensure_path_contains(install_dir)?;
 
-    info!("Update complete!");
-    info!("Configuration location: {}", config_dir.display());
+    // 9. Ensure shell wrapper exists (create if missing)
+    create_cli_wrapper(install_dir, config_dir)?;
 
+    info!("Update completed successfully!");
     Ok(())
 }
 
@@ -1390,5 +1363,33 @@ fn create_daemon_symlinks(install_dir: &Path, daemons: &[DaemonInfo]) -> Result<
     }
 
     info!("Daemon symlinks created successfully");
+    Ok(())
+}
+
+/// Recursively copies a directory and its contents.
+fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> {
+    let src_path = src.as_ref();
+    let dst_path = dst.as_ref();
+    fs::create_dir_all(&dst_path)?;
+    debug!(
+        "Recursively copying from {} to {}",
+        src_path.display(),
+        dst_path.display()
+    );
+    for entry_result in fs::read_dir(src_path)? {
+        let entry = entry_result?;
+        let file_type = entry.file_type()?;
+        let dst_entry_path = dst_path.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(entry.path(), dst_entry_path)?;
+        } else {
+            fs::copy(entry.path(), &dst_entry_path)?;
+            debug!(
+                "Copied file {} to {}",
+                entry.path().display(),
+                dst_entry_path.display()
+            );
+        }
+    }
     Ok(())
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use gemini_core::types::Content;
 
 /// Represents a single piece of memory retrieved or stored.
 /// TODO: Finalize fields - consider adding source, timestamp, embedding ID etc.
@@ -16,4 +17,5 @@ pub struct ConversationTurn {
     pub user_query: String,
     pub retrieved_memories: Vec<MemoryItem>,
     pub llm_response: String,
+    pub turn_parts: Vec<Content>,
 }

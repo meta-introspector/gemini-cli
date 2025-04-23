@@ -41,7 +41,7 @@ pub struct FunctionParameter {
 }
 
 /// Function call from LLM response
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct FunctionCall {
     pub name: String,
     #[serde(rename = "args")]
@@ -49,7 +49,7 @@ pub struct FunctionCall {
 }
 
 /// Function response to send back to LLM
-#[derive(Serialize, Clone, Debug, Deserialize)]
+#[derive(Serialize, Clone, Debug, Deserialize, PartialEq)]
 pub struct FunctionResponse {
     pub name: String,
     pub response: Value,
@@ -82,7 +82,7 @@ pub struct FunctionDeclaration {
 }
 
 /// Content structure for requests and responses
-#[derive(Serialize, Clone, Debug, Deserialize)]
+#[derive(Serialize, Clone, Debug, Deserialize, PartialEq)]
 pub struct Content {
     pub parts: Vec<Part>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,7 +90,7 @@ pub struct Content {
 }
 
 /// Part structure for a piece of content
-#[derive(Serialize, Clone, Debug, Deserialize)]
+#[derive(Serialize, Clone, Debug, Deserialize, PartialEq)]
 pub struct Part {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,

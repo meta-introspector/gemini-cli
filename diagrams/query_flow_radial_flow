@@ -1,0 +1,31 @@
+// End-to-End Query Flow (Logical)
+digraph QueryFlowLogical {
+	node [fontname=Arial fontsize=12 margin="0.3,0.2" style=filled]
+	edge [fontname=Arial fontsize=10]
+	happe [label="HAPPE
+Daemon" fillcolor="#FFF2CC" shape=circle style="filled,bold"]
+	user [label="End User" fillcolor="#D4E8FC" shape=box]
+	ida [label="IDA
+Daemon" fillcolor="#D8BFD8" shape=box]
+	mem_mcp [label="Memory
+MCP Server" fillcolor="#FFDAB9" shape=cylinder]
+	other_mcp [label="Other MCP
+Server(s)" fillcolor="#E0FFE0" shape=component]
+	llm [label="Main LLM
+API" fillcolor="#ADD8E6" shape=box]
+	user -> happe [label="1. Query" color=black]
+	happe -> ida [label="2. Get Memories" color=black]
+	ida -> mem_mcp [label="3. Retrieve" color=black]
+	mem_mcp -> ida [label="4. Memories" color=black style=dashed]
+	ida -> happe [label="5. Memories" color=black style=dashed]
+	happe -> llm [label="6. Generate" color=black]
+	llm -> happe [label="7a. Function Calls" color=blue style=dashed]
+	happe -> other_mcp [label="7b. Tool Call" color=blue]
+	other_mcp -> happe [label="7c. Result" color=blue style=dashed]
+	happe -> llm [label="7d. Tool Response" color=blue]
+	llm -> happe [label="8. Response" color=black style=dashed]
+	happe -> user [label="9. Response" color=black style=dashed]
+	happe -> ida [label="10. Store Turn" color=darkgreen style=dotted]
+	ida -> mem_mcp [label="11. Store Memory" color=darkgreen style=dotted]
+	mem_mcp -> ida [label="12. Ack" color=darkgreen style="dotted,dashed"]
+}

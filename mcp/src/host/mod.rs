@@ -37,6 +37,9 @@ impl McpHost {
             );
         }
 
+        // Added more debug info to help diagnose initialization issues
+        info!("Creating MCP Host with {} server configurations", configs.len());
+
         let host = McpHost {
             servers: Arc::new(Mutex::new(HashMap::new())),
             next_request_id: Arc::new(AtomicU64::new(1)), // Start IDs from 1
@@ -58,6 +61,8 @@ impl McpHost {
                 auto_execute,
             } = config_orig.clone();
 
+            info!("Preparing to launch server: '{}'", server_name);
+
             // Create a new config instance from the cloned parts for launching servers
             // This is needed because ActiveServer::launch_* expects a McpServerConfig
             let launch_config = McpServerConfig {
@@ -77,12 +82,15 @@ impl McpHost {
                 );
             }
 
+            info!("Launching server '{}' with transport {:?}", server_name, transport);
+
             let init_future = match transport {
                 McpTransport::Stdio => {
                     match ActiveServer::launch_stdio(&host.next_request_id, launch_config.clone())
                         .await
                     {
                         Ok((server, init_future)) => {
+                            info!("Server '{}' process launched successfully, awaiting initialization", server_name);
                             servers_map.insert(server_name.clone(), server);
                             init_future
                         }
@@ -138,23 +146,28 @@ impl McpHost {
             init_tasks.push((server_name, init_future));
         }
 
+        info!("All servers launched, waiting for initialization responses ({} servers)", init_tasks.len());
+
         // Wait for all servers to initialize
-        let mut init_errors = Vec::new();
         for (server_name, init_future) in init_tasks {
+            info!("Awaiting initialization response from server '{}'", server_name);
             match init_future.await {
                 Ok(result) => {
-                    if let Err(_e) = result {
-                        eprintln!("Initialization error: Server '{}' init failed", server_name);
-                        init_errors.push(format!("Server '{}' init failed", server_name));
-                        failed_count += 1;
+                    match result {
+                        Ok(_) => {
+                            info!("Server '{}' initialized successfully.", server_name);
+                        }
+                        Err(e) => {
+                            eprintln!("Initialization error: Server '{}' init failed with error: {}", server_name, e.message);
+                            failed_count += 1;
+                        }
                     }
                 }
-                Err(_) => {
+                Err(elapsed) => {
                     eprintln!(
-                        "Initialization error: Server '{}' init timed out",
-                        server_name
+                        "Initialization error: Server '{}' init timed out after {:?}",
+                        server_name, elapsed
                     );
-                    init_errors.push(format!("Server '{}' init timed out", server_name));
                     failed_count += 1;
                 }
             }
@@ -162,8 +175,10 @@ impl McpHost {
 
         // Move servers to the host's map
         {
+            info!("Moving {} servers to host's server map", servers_map.len());
             let mut host_servers = host.servers.lock().await;
             *host_servers = servers_map;
+            info!("Server map updated successfully");
         }
 
         if failed_count > 0 {
@@ -171,8 +186,11 @@ impl McpHost {
                 "Warning: {} MCP servers failed to initialize and will be unavailable.",
                 failed_count
             );
+            // NOTE: We no longer return Err here. Initialization proceeds.
         }
 
+        info!("MCP Host initialization completed");
+        // Always return Ok. Failures are logged as warnings.
         Ok(host)
     }
 
@@ -353,11 +371,17 @@ impl McpHost {
         // Parse response
         match response.result() {
             Ok(result_value) => {
+                // Modify this block to handle both formats: with and without 'result' field
                 if let Some(result) = result_value.get("result") {
+                    // Original format - result is inside a 'result' field
                     Ok(result.clone())
+                } else if result_value.is_object() {
+                    // Alternative format - the result value itself is the return value
+                    // This handles the Python server's response format
+                    Ok(result_value.clone())
                 } else {
                     Err(format!(
-                        "Server '{}' returned invalid result format. Expected JSON with 'result' field.",
+                        "Server '{}' returned invalid result format. Expected JSON object.",
                         server_name
                     ))
                 }

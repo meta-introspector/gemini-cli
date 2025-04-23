@@ -54,7 +54,10 @@ pub async fn generate_response(
 
             let text = client
                 .extract_text_from_response(&response)
-                .map_err(|e| anyhow!("Failed to extract text from response: {}", e))?;
+                .unwrap_or_else(|e| {
+                    debug!("No text in response: {}", e);
+                    String::new()
+                });
 
             let function_calls: Vec<FunctionCall> = client
                 .extract_function_calls_from_response(&response)

@@ -1,0 +1,41 @@
+[
+  {
+    "name": "filesystem-mcp",
+    "enabled": true,
+    "transport": "stdio",
+    "command": [
+      "/home/james/.local/share/gemini-cli/mcp-servers/embedding/venv/bin/python3"
+    ],
+    "args": [
+      "/home/james/Documents/gemini-suite/python_mcp/servers/filesystem_mcp.py"
+    ],
+    "env": {},
+    "auto_execute": []
+  },
+  {
+    "name": "command-mcp",
+    "enabled": true,
+    "transport": "stdio",
+    "command": [
+      "/home/james/.local/share/gemini-cli/mcp-servers/embedding/venv/bin/python3"
+    ],
+    "args": [
+       "/home/james/Documents/gemini-suite/python_mcp/servers/command_mcp.py"
+    ],
+    "env": {},
+    "auto_execute": []
+  },
+  {
+    "name": "memory-store-mcp",
+    "enabled": true,
+    "transport": "stdio",
+    "command": [
+       "/home/james/.local/share/gemini-cli/mcp-servers/embedding/venv/bin/python3"
+    ],
+    "args": [
+      "/home/james/Documents/gemini-suite/python_mcp/servers/memstore.py"
+    ],
+    "env": {},
+    "auto_execute": []
+  }
+] 

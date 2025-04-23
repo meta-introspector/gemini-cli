@@ -129,22 +129,13 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<IpcServerState>) -
             &state.config,
             &state.mcp_client,
             &state.gemini_client,
-            &session,
+            &mut session,
             request.query.clone(),
         )
         .await
         {
             Ok(response_text) => {
-                // Create turn data and update session history
-                let turn = ConversationTurn {
-                    user_query: request.query,
-                    llm_response: response_text.clone(),
-                    retrieved_memories: vec![],
-                };
-                
-                coordinator::update_session_history(&mut session, turn);
-                
-                // Save the session
+                // Save the session (state was potentially modified in process_query)
                 if let Err(e) = state.session_store.save_session(session.clone()).await {
                     error!(error = %e, "Failed to save session");
                     // Continue despite error

@@ -122,10 +122,15 @@ pub fn generate_tool_declarations(tools: &[gemini_core::rpc_types::Tool]) -> Too
     let function_declarations: Vec<FunctionDeclaration> = tools
         .iter()
         .filter_map(|tool| {
-            // Ensure name meets Gemini API requirements (starts with letter/underscore, alphanumeric with dots/underscores/dashes)
-            let name = tool.name.clone();
-            if !is_valid_function_name(&name) {
-                tracing::warn!("Skipping tool with invalid name: {}", name);
+            // Get the original name with server prefix
+            let original_name = tool.name.clone();
+            
+            // Process the name to make it compatible with Gemini API requirements
+            let normalized_name = original_name.replace("/", "."); // Replace slashes with dots
+            
+            // Validate the normalized name
+            if !is_valid_function_name(&normalized_name) {
+                tracing::warn!("Skipping tool with invalid name after normalization: {}", original_name);
                 return None;
             }
 
@@ -150,7 +155,7 @@ pub fn generate_tool_declarations(tools: &[gemini_core::rpc_types::Tool]) -> Too
             }
 
             Some(FunctionDeclaration {
-                name,
+                name: normalized_name,
                 description: tool.description.clone(),
                 parameters,
             })

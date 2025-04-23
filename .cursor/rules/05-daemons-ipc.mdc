@@ -7,8 +7,8 @@ alwaysApply: false
 
 For more complex, persistent scenarios, the system uses background daemons communicating via Inter-Process Communication (IPC).
 
-*   **`HAPPE` Daemon ([HAPPE/README.md](mdc:HAPPE/README.md))**: The Host Application Environment. Orchestrates user interactions, LLM calls, MCP tool execution, and communication with `IDA`.
-*   **`IDA` Daemon ([IDA/README.md](mdc:IDA/README.md))**: Internal Dialogue App. Manages persistent memory interactions (retrieval/storage via Memory MCP Server) and other background cognitive tasks.
+*   **`happe` Daemon (@happe/README.md)**: The Host Application Environment. Orchestrates user interactions, LLM calls, MCP tool execution, and communication with `IDA`.
+*   **`ida` Daemon (@ida/README.md)**: Internal Dialogue App. Manages persistent memory interactions (retrieval/storage via Memory MCP Server) and other background cognitive tasks.
 *   **`mcp-hostd` Daemon ([mcp/README.md](mdc:mcp/README.md))**: Standalone MCP host process. Manages connections to MCP tool servers.
 *   **IPC Definitions (`gemini-ipc`)**: The `gemini-ipc` crate ([ipc/README.md](mdc:ipc/README.md)) centralizes message structures for communication between these components.
     *   `internal_messages.rs` ([ipc/src/internal_messages.rs](mdc:ipc/src/internal_messages.rs)): Defines messages between `HAPPE` and `IDA`.

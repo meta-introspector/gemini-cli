@@ -1,7 +1,7 @@
 use crate::config::McpServerConfig;
 use crate::rpc::Notification;
 use gemini_core::rpc_types::{JsonRpcError, Request, Response, ServerCapabilities};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, warn, trace};
 use serde_json;
 use std::collections::HashMap;
 use std::future::Future;
@@ -81,6 +81,11 @@ impl ActiveServer {
         cmd.args(&config.args);
         cmd.envs(&config.env);
 
+        // --- Add RUST_LOG=trace for detailed server logging ---
+        cmd.env("RUST_LOG", "trace");
+        info!("Setting RUST_LOG=trace for server: {}", server_name);
+        // --- End of addition ---
+
         // Configure stdin, stdout, stderr pipes
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -91,19 +96,20 @@ impl ActiveServer {
             .spawn()
             .map_err(|e| format!("Server '{}': Failed to spawn: {}", server_name, e))?;
 
-        // Get stdin/stdout/stderr handles
-        let _actual_stdin = process
+        // --- Keep ChildStdin/ChildStdout handles ---
+        let child_stdin = process
             .stdin
             .take()
             .ok_or_else(|| format!("Server '{}': Failed to get stdin", server_name))?;
-        let _actual_stdout = process
+        let child_stdout = process
             .stdout
             .take()
             .ok_or_else(|| format!("Server '{}': Failed to get stdout", server_name))?;
-        let _actual_stderr = process
+        let child_stderr = process
             .stderr
             .take()
             .ok_or_else(|| format!("Server '{}': Failed to get stderr", server_name))?;
+        // --- End of change ---
 
         // Create channels for communication
         let (_request_tx, mut _request_rx): (ServerRequestChannel, ServerRequestReceiver) = mpsc::channel(CHANNEL_BUFFER_SIZE);
@@ -128,9 +134,10 @@ impl ActiveServer {
         let pending_requests_clone = _pending_requests.clone();
         let capabilities_clone = _capabilities.clone();
 
+        // --- Pass actual stderr handle ---
         // Spawn stderr handler task
         task::spawn(async move {
-            let mut reader = BufReader::new(_actual_stderr);
+            let mut reader = BufReader::new(child_stderr); // Use actual handle
             let mut line = String::new();
             loop {
                 match reader.read_line(&mut line).await {
@@ -154,9 +161,10 @@ impl ActiveServer {
             }
         });
 
+        // --- Pass actual stdout handle ---
         // Spawn stdout reader task
         task::spawn(async move {
-            let mut reader = BufReader::with_capacity(STDIO_BUFFER_SIZE, _actual_stdout);
+            let mut reader = BufReader::with_capacity(STDIO_BUFFER_SIZE, child_stdout); // Use actual handle
             let mut buffer = Vec::with_capacity(JSON_RPC_PARSE_BUFFER_SIZE); // Use Vec for easier clearing and resizing
 
             loop {
@@ -281,14 +289,14 @@ impl ActiveServer {
                                                 {
                                                     Ok(response) => {
                                                         // Handle response
-                                                        let request_id = match &response.id {
+                                                        let response_id = match &response.id {
                                                             serde_json::Value::Number(n) => {
                                                                 n.as_u64()
                                                             }
                                                             _ => None, // Ignore responses with non-numeric IDs for now
                                                         };
 
-                                                        if let Some(id) = request_id {
+                                                        if let Some(id) = response_id {
                                                             // Remove from pending requests and send response to requester
                                                             if let Some(pending) =
                                                                 pending_requests_clone
@@ -296,7 +304,12 @@ impl ActiveServer {
                                                                     .await
                                                                     .remove(&id)
                                                             {
-                                                                debug!("Stdout({}): Matched response ID {} to pending request '{}'", server_name_stdout, id, pending.method);
+                                                                trace!(
+                                                                    "Stdout({}): Matched response ID {} for method {}",
+                                                                    server_name_stdout,
+                                                                    id,
+                                                                    pending.method
+                                                                );
                                                                 if pending.method == "initialize" {
                                                                     // If initialize, update capabilities
                                                                     if let Ok(result) =
@@ -325,16 +338,26 @@ impl ActiveServer {
                                                                 // Send response back
                                                                 debug!("Stdout({}): Sending response for ID {} back to requester.", server_name_stdout, id);
                                                                 if !pending.responder.is_closed() && pending.responder.send(Ok(response)).is_err() {
-                                                                    error!(
-                                                                        "Failed to send response for req ID {}, receiver likely dropped",
-                                                                        id
+                                                                    warn!(
+                                                                        "Stdout({}): Failed to send response for ID {} (receiver dropped?)",
+                                                                        server_name_stdout, id
                                                                     );
                                                                 }
                                                             } else {
-                                                                warn!("Stdout({}): Received response for unknown or timed-out request ID: {}", server_name_stdout, id);
+                                                                // ID not found in pending requests - could be late or unknown
+                                                                let trimmed_line = json_str.trim();
+                                                                warn!(
+                                                                    "Stdout({}): Received response for unknown or timed-out request ID: {}. Line: {}",
+                                                                    server_name_stdout, id, trimmed_line
+                                                                );
                                                             }
                                                         } else {
-                                                            warn!("Stdout({}): Received response with non-numeric or null ID: {:?}", server_name_stdout, response.id);
+                                                            // ID is not a u64
+                                                            let trimmed_line = json_str.trim();
+                                                            warn!(
+                                                                "Stdout({}): Received response with non-u64 ID: {:?}. Line: {}",
+                                                                server_name_stdout, response.id, trimmed_line
+                                                            );
                                                         }
                                                     }
                                                     Err(e) => {
@@ -412,9 +435,10 @@ impl ActiveServer {
             }
         });
 
+        // --- Pass actual stdin handle ---
         // Spawn stdin writer task (Inline implementation)
         let _stdin_writer_handle = task::spawn(async move {
-            let mut writer = BufWriter::with_capacity(STDIO_BUFFER_SIZE, _actual_stdin);
+            let mut writer = BufWriter::with_capacity(STDIO_BUFFER_SIZE, child_stdin); // Use actual handle
             loop {
                 tokio::select! {
                     // Use biased select to prioritize checking messages first, then shutdown/sleep
@@ -936,14 +960,14 @@ impl ActiveServer {
                                                 {
                                                     Ok(response) => {
                                                         // Handle response
-                                                        let request_id = match &response.id {
+                                                        let response_id = match &response.id {
                                                             serde_json::Value::Number(n) => {
                                                                 n.as_u64()
                                                             }
                                                             _ => None, // Ignore responses with non-numeric IDs for now
                                                         };
 
-                                                        if let Some(id) = request_id {
+                                                        if let Some(id) = response_id {
                                                             // Remove from pending requests and send response to requester
                                                             if let Some(pending) =
                                                                 pending_requests_clone
@@ -951,7 +975,12 @@ impl ActiveServer {
                                                                     .await
                                                                     .remove(&id)
                                                             {
-                                                                debug!("Stdout({}): Matched response ID {} to pending request '{}'", server_name_stdout, id, pending.method);
+                                                                trace!(
+                                                                    "Stdout({}): Matched response ID {} for method {}",
+                                                                    server_name_stdout,
+                                                                    id,
+                                                                    pending.method
+                                                                );
                                                                 if pending.method == "initialize" {
                                                                     // If initialize, update capabilities
                                                                     if let Ok(result) =
@@ -980,16 +1009,26 @@ impl ActiveServer {
                                                                 // Send response back
                                                                 debug!("Stdout({}): Sending response for ID {} back to requester.", server_name_stdout, id);
                                                                 if !pending.responder.is_closed() && pending.responder.send(Ok(response)).is_err() {
-                                                                    error!(
-                                                                        "Failed to send response for req ID {}, receiver likely dropped",
-                                                                        id
+                                                                    warn!(
+                                                                        "Stdout({}): Failed to send response for ID {} (receiver dropped?)",
+                                                                        server_name_stdout, id
                                                                     );
                                                                 }
                                                             } else {
-                                                                warn!("Stdout({}): Received response for unknown or timed-out request ID: {}", server_name_stdout, id);
+                                                                // ID not found in pending requests - could be late or unknown
+                                                                let trimmed_line = json_str.trim();
+                                                                warn!(
+                                                                    "Stdout({}): Received response for unknown or timed-out request ID: {}. Line: {}",
+                                                                    server_name_stdout, id, trimmed_line
+                                                                );
                                                             }
                                                         } else {
-                                                            warn!("Stdout({}): Received response with non-numeric or null ID: {:?}", server_name_stdout, response.id);
+                                                            // ID is not a u64
+                                                            let trimmed_line = json_str.trim();
+                                                            warn!(
+                                                                "Stdout({}): Received response with non-u64 ID: {:?}. Line: {}",
+                                                                server_name_stdout, response.id, trimmed_line
+                                                            );
                                                         }
                                                     }
                                                     Err(e) => {

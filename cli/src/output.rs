@@ -1,19 +1,112 @@
 use colored::*;
-use pulldown_cmark::{
-    CodeBlockKind, Event as MdEvent, HeadingLevel, Options, Parser as MdParser, Tag,
-};
-use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
+use syntect::highlighting::ThemeSet;
+use syntect::easy::HighlightLines;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use std::fmt::Write;
 
 /// Print formatted response from HAPPE daemon to the terminal
 pub fn print_happe_response(response: &str) {
-    // Render markdown in the response
-    let rendered_response = render_markdown(response);
+    // Check if this is a tool execution response by looking for JSON structure
+    if response.trim().starts_with('{') && (response.contains("\"tool\":") || response.contains("\"arguments\":")) {
+        println!("\n{}: This query resulted in tool execution:", "Tool Call".blue().bold());
+        
+        // Try to pretty-print the JSON
+        match serde_json::from_str::<serde_json::Value>(response) {
+            Ok(json) => {
+                if let Ok(pretty) = serde_json::to_string_pretty(&json) {
+                    // Split by lines and add prefix to each line
+                    for line in pretty.lines() {
+                        println!("  {}", line);
+                    }
+                } else {
+                    // Fall back to raw display if pretty printing fails
+                    println!("  {}", response);
+                }
+            },
+            Err(_) => {
+                // Not valid JSON, just print as-is
+                println!("  {}", response);
+            }
+        }
+        println!("\n{}: Tool execution completed.", "System".yellow());
+    } else {
+        // Regular text response - use markdown rendering
+        let rendered_response = render_markdown(response);
+        println!("\n{}: {}", "Assistant".cyan().bold(), rendered_response);
+    }
+}
 
-    // Print the response with a colored prefix
-    println!("{}: {}", "Assistant".blue().bold(), rendered_response);
+/// Render markdown in the response
+fn render_markdown(text: &str) -> String {
+    // This is a simplified implementation
+    // For a full implementation, consider using a markdown crate
+    
+    // Highlight code blocks if possible
+    let mut result = String::new();
+    let mut in_code_block = false;
+    let mut language = String::new();
+    let mut code_block = String::new();
+    
+    let ps = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
+    let theme = &ts.themes["base16-ocean.dark"];
+    
+    for line in text.lines() {
+        if line.starts_with("```") {
+            if in_code_block {
+                // End of code block
+                in_code_block = false;
+                
+                // Highlight the code block if possible
+                if let Some(syntax) = ps.find_syntax_by_token(&language) {
+                    let mut highlighter = HighlightLines::new(syntax, theme);
+                    
+                    for line in LinesWithEndings::from(&code_block) {
+                        match highlighter.highlight_line(line, &ps) {
+                            Ok(highlighted) => {
+                                result.push_str(&as_24_bit_terminal_escaped(&highlighted, false));
+                            },
+                            Err(_) => {
+                                // Fallback if highlighting fails
+                                result.push_str(line);
+                            }
+                        }
+                    }
+                } else {
+                    // Just append the code block if we can't highlight it
+                    result.push_str(&code_block);
+                }
+                
+                result.push('\n');
+                language.clear();
+                code_block.clear();
+            } else {
+                // Start of code block
+                in_code_block = true;
+                language = line.trim_start_matches("```").to_string();
+            }
+        } else if in_code_block {
+            // Inside code block
+            code_block.push_str(line);
+            code_block.push('\n');
+        } else {
+            // Regular text
+            // Format bold and italic text
+            let formatted = line
+                .replace("**", "\x1b[1m")
+                .replace("__", "\x1b[1m")
+                .replace("*", "\x1b[3m")
+                .replace("_", "\x1b[3m")
+                .replace("\x1b[1m\x1b[1m", "\x1b[22m")
+                .replace("\x1b[3m\x1b[3m", "\x1b[23m");
+            
+            result.push_str(&formatted);
+            result.push('\n');
+        }
+    }
+    
+    result
 }
 
 /// Show usage instructions when no prompt or action is provided
@@ -29,249 +122,4 @@ pub fn print_usage_instructions() {
     println!("  --happe-ipc-path <PATH>  Specify HAPPE daemon socket path");
     println!("  --help                   Show this help message");
     println!();
-}
-
-/// Render markdown in the terminal with syntax highlighting
-pub fn render_markdown(markdown: &str) -> String {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-
-    let parser = MdParser::new_ext(markdown, options);
-
-    // Initialize syntax highlighting
-    let syntax_set = SyntaxSet::load_defaults_newlines();
-    let theme_set = ThemeSet::load_defaults();
-    let theme = theme_set
-        .themes
-        .get("base16-ocean.dark")
-        .unwrap_or_else(|| theme_set.themes.values().next().unwrap());
-
-    let mut in_code_block = false;
-    let mut code_block_lang = String::new();
-    let mut code_block_content = String::new();
-    let mut output = String::new();
-
-    // Table state tracking
-    let mut in_table = false;
-    let mut in_table_cell = false;
-    let mut current_row: Vec<String> = Vec::new();
-    let mut table_rows: Vec<Vec<String>> = Vec::new();
-
-    for event in parser {
-        match event {
-            // Table handling
-            MdEvent::Start(Tag::Table(_)) => {
-                in_table = true;
-                table_rows.clear();
-                output.push('\n');
-            }
-            MdEvent::End(Tag::Table(_)) => {
-                if !table_rows.is_empty() {
-                    // Calculate column widths
-                    let col_count = table_rows.iter().map(|row| row.len()).max().unwrap_or(0);
-                    let mut col_widths = vec![0; col_count];
-
-                    for row in &table_rows {
-                        for (i, cell) in row.iter().enumerate() {
-                            if i < col_widths.len() {
-                                col_widths[i] = col_widths[i].max(cell.len());
-                            }
-                        }
-                    }
-
-                    // Render table with proper spacing
-                    for (i, row) in table_rows.iter().enumerate() {
-                        // Print cells with proper padding
-                        for (j, cell) in row.iter().enumerate() {
-                            if j < col_widths.len() {
-                                let padding = col_widths[j].saturating_sub(cell.len());
-                                let formatted_cell = if i == 0 {
-                                    // Header cell
-                                    format!("{}{} ", cell.bold(), " ".repeat(padding))
-                                } else {
-                                    format!("{}{} ", cell, " ".repeat(padding))
-                                };
-                                output.push_str(&formatted_cell);
-                            }
-                        }
-                        output.push('\n');
-
-                        // Add separator line after header
-                        if i == 0 {
-                            for (j, width) in col_widths.iter().enumerate() {
-                                output.push_str(&"─".repeat(*width).dimmed().to_string());
-                                if j < col_widths.len() - 1 {
-                                    output.push(' ');
-                                }
-                            }
-                            output.push('\n');
-                        }
-                    }
-                    output.push('\n');
-                }
-                in_table = false;
-            }
-            MdEvent::Start(Tag::TableHead) => {
-                // Just track that we're in a table header
-            }
-            MdEvent::End(Tag::TableHead) => {
-                // No action needed
-            }
-            MdEvent::Start(Tag::TableRow) => {
-                current_row.clear();
-            }
-            MdEvent::End(Tag::TableRow) => {
-                if !current_row.is_empty() {
-                    table_rows.push(current_row.clone());
-                }
-            }
-            MdEvent::Start(Tag::TableCell) => {
-                in_table_cell = true;
-                current_row.push(String::new());
-            }
-            MdEvent::End(Tag::TableCell) => {
-                in_table_cell = false;
-            }
-            // Regular markdown elements
-            MdEvent::Start(Tag::Heading(level, ..)) => match level {
-                HeadingLevel::H1 => output.push_str(&format!("\n{} ", "##".bright_cyan().bold())),
-                HeadingLevel::H2 => output.push_str(&format!("\n{} ", "#".bright_cyan().bold())),
-                _ => output.push('\n'),
-            },
-            MdEvent::End(Tag::Heading(..)) => {
-                output.push('\n');
-            }
-            MdEvent::Start(Tag::Paragraph) => {
-                if !in_table
-                    && !output.is_empty()
-                    && !output.ends_with("\n\n")
-                    && !output.ends_with('\n')
-                {
-                    output.push_str("\n\n");
-                }
-            }
-            MdEvent::End(Tag::Paragraph) => {
-                if !in_table {
-                    output.push('\n');
-                }
-            }
-            MdEvent::Start(Tag::BlockQuote) => {
-                output.push('\n');
-            }
-            MdEvent::End(Tag::BlockQuote) => {
-                output.push('\n');
-            }
-            MdEvent::Start(Tag::CodeBlock(info)) => {
-                in_code_block = true;
-                // Extract the language from the code block info
-                match info {
-                    CodeBlockKind::Fenced(lang) => code_block_lang = lang.to_string(),
-                    _ => code_block_lang = String::new(),
-                }
-                code_block_content.clear();
-                output.push('\n');
-            }
-            MdEvent::End(Tag::CodeBlock(_)) => {
-                // Apply syntax highlighting
-                let syntax = if code_block_lang.is_empty() {
-                    syntax_set.find_syntax_plain_text()
-                } else {
-                    syntax_set
-                        .find_syntax_by_token(&code_block_lang)
-                        .unwrap_or_else(|| syntax_set.find_syntax_plain_text())
-                };
-
-                let mut highlighter = HighlightLines::new(syntax, theme);
-
-                // Add a separator line
-                output.push_str(&format!("{}:\n", code_block_lang.cyan()));
-                output.push_str(&"─".repeat(40).dimmed().to_string());
-                output.push('\n');
-
-                for line in LinesWithEndings::from(&code_block_content) {
-                    let highlighted = highlighter
-                        .highlight_line(line, &syntax_set)
-                        .unwrap_or_default();
-                    let escaped = as_24_bit_terminal_escaped(&highlighted, false);
-                    output.push_str(&escaped);
-                }
-
-                // Add a separator line
-                output.push_str(&"─".repeat(40).dimmed().to_string());
-                output.push_str("\n\n");
-
-                in_code_block = false;
-            }
-            MdEvent::Start(Tag::List(_)) => {
-                output.push('\n');
-            }
-            MdEvent::End(Tag::List(_)) => {
-                output.push('\n');
-            }
-            MdEvent::Start(Tag::Item) => {
-                output.push_str(&format!("{}  ", "•".yellow()));
-            }
-            MdEvent::End(Tag::Item) => {
-                output.push('\n');
-            }
-            MdEvent::Start(Tag::Emphasis) => {
-                if !in_table_cell {
-                    // No special handling needed for table cells
-                }
-            }
-            MdEvent::End(Tag::Emphasis) => {
-                // No special handling needed
-            }
-            MdEvent::Start(Tag::Strong) => {
-                if !in_table_cell {
-                    // No special handling needed
-                }
-            }
-            MdEvent::End(Tag::Strong) => {
-                // No special handling needed
-            }
-            MdEvent::Code(ref code) => {
-                if in_table_cell && !current_row.is_empty() {
-                    let idx = current_row.len() - 1;
-                    current_row[idx].push_str(&format!("`{}`", code));
-                } else {
-                    output.push_str(&format!("`{}`", code.on_bright_black().white()));
-                }
-            }
-            MdEvent::Text(ref text) => {
-                if in_code_block {
-                    code_block_content.push_str(text);
-                } else if in_table_cell && !current_row.is_empty() {
-                    let idx = current_row.len() - 1;
-                    current_row[idx].push_str(text);
-                } else {
-                    output.push_str(text);
-                }
-            }
-            MdEvent::Html(ref html) => {
-                // Just pass through HTML
-                if !in_table_cell {
-                    output.push_str(html);
-                }
-            }
-            MdEvent::SoftBreak => {
-                if !in_table_cell {
-                    output.push(' ');
-                }
-            }
-            MdEvent::HardBreak => {
-                if !in_table_cell {
-                    output.push('\n');
-                }
-            }
-            _ => {
-                // Handle other cases as needed
-            }
-        }
-    }
-
-    output
 }

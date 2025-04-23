@@ -324,3 +324,62 @@ This phase adds a stateful session management system to HAPPE, allowing it to ma
 - [ ] **Integration Tests:** Test IPC handler with session history.
 - [ ] **End-to-End Tests (`@cli` -> `happe-daemon`):** Verify context is maintained across multiple turns within a single CLI run.
 - [ ] **Refinement:** Assess performance, history pruning, error handling, security of session IDs.
+
+## Phase 11: Rewrite MCP Servers (Hybrid Approach - Python Facades, Rust Core Memory)
+
+This phase replaces `filesystem-mcp` and `command-mcp` with Python implementations. `memory-store-mcp` becomes a Python facade process, while its core logic (including vector store via `gemini-memory`) is embedded and executed directly within `mcp-hostd.rs`.
+
+### Sub-Phase 1: Investigation & Design Refinement
+
+- [x] **Analyze `mcp-hostd.rs` & `gemini_mcp` Crate:** (Config loading/launching confirmed).
+- [x] **Analyze `install` Crate:** (Binary/config handling understood).
+- [x] **Analyze `gemini-memory` Dependency:** (Will be embedded in `mcp-hostd`).
+- [x] **Refine Design:** Confirm hybrid strategy:
+    - [x] `mcp-hostd` embeds `gemini_memory::MemoryStore`.
+    - [x] `mcp-hostd` intercepts & handles `memory-store-mcp/*` tool calls internally.
+    - [x] Minimal `memory-store-mcp.py` facade launched via stdio for handshake.
+    - [x] Standard `filesystem-mcp.py` and `command-mcp.py` servers.
+
+### Sub-Phase 2: Implementation
+
+- [ ] **Modify `mcp-hostd.rs` (Initialization):**
+    - [ ] Ensure `gemini-memory` dependency available to `mcp-hostd`.
+    - [ ] Initialize `MemoryStore` instance during startup.
+    - [ ] Load necessary `MemoryStore` config (DB path, etc.) from main `config.toml`.
+    - [ ] Store `Arc<MemoryStore>` where `process_request` can access it.
+- [ ] **Modify `mcp-hostd.rs` (`process_request`):**
+    - [ ] Add logic to intercept `ExecuteTool` for `server == "memory-store-mcp"`.
+    - [ ] Implement internal calls to embedded `MemoryStore` for intercepted requests.
+    - [ ] Bypass standard `host.execute_tool` for these intercepted requests.
+- [ ] **Modify `mcp-hostd.rs` (Capabilities):**
+    - [ ] Manually add tool definitions for internal memory operations under the `memory-store-mcp` server name during capability aggregation.
+- [ ] **Implement `python_mcp/servers/base_server.py` (as before).**
+- [ ] **Implement `python_mcp/servers/filesystem_mcp.py` (as before).**
+- [ ] **Implement `python_mcp/servers/command_mcp.py` (as before).**
+- [ ] **Simplify `python_mcp/servers/memory_store_mcp.py`:**
+    - [ ] Remove `MemoryStore` class and tool handlers.
+    - [ ] `main` should only create `McpBaseServer`, register no tools, and call `run()`.
+- [ ] **Project Setup (`python_mcp`, `requirements.txt` - as before).**
+
+### Sub-Phase 3: Integration & Installation
+
+- [ ] **Modify `install/src/main.rs`:**
+    - [ ] Remove Rust MCP binary installation steps.
+    - [ ] Add step to copy `python_mcp` directory to installation target.
+    - [ ] Modify `install_unified_config`:
+        - [ ] Generate `mcp_servers.json` entries pointing all 3 servers (`memory-store-mcp`, `filesystem-mcp`, `command-mcp`) to their Python scripts.
+        - [ ] Ensure main `config.toml` generation includes necessary `[memory]` / `[ida]` sections for embedded `MemoryStore` config.
+
+### Sub-Phase 4: Testing & Deployment
+
+- [ ] Build & Install modified `install` crate.
+- [ ] Verify Python scripts and config files placement.
+- [ ] Install Python dependencies (`pip install -r requirements.txt`).
+- [ ] Start `mcp-hostd`. Check logs for embedded `MemoryStore` init & Python process handshakes.
+- [ ] IPC Client Testing:
+    - [ ] Test `GetCapabilities` (should show memory tools listed under `memory-store-mcp`).
+    - [ ] Test `filesystem-mcp` tools (check Python logs).
+    - [ ] Test `command-mcp` tools (check Python logs).
+    - [ ] Test `memory-store-mcp` tools (check `mcp-hostd` logs & DB state).
+- [ ] Shutdown Testing.
+- [ ] Deployment.

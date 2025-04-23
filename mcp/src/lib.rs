@@ -8,7 +8,6 @@ pub mod gemini;
 pub mod host;
 // pub mod ipc; // Removed, now handled by the dedicated `ipc` crate
 pub mod rpc;
-pub mod servers;
 
 // Re-export main types and functions for convenience
 pub use host::McpHost;
@@ -22,9 +21,5 @@ pub use gemini::{
 // pub use rpc::{ServerCapabilities, Tool, Resource};
 pub use config::{get_mcp_config_path, load_mcp_servers, McpServerConfig, McpTransport};
 
-// Re-export server modules
-pub use servers::command;
-pub use servers::filesystem;
-pub use servers::memory_store;
 
 // Modules will be added in Phase 4

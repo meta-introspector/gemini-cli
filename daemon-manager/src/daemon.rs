@@ -86,13 +86,26 @@ fn get_binary_path(daemon_name: &str) -> Result<PathBuf> {
         _ => return Err(anyhow!("Unknown daemon: {}", daemon_name)),
     };
 
-    // Try to find the binary in PATH first (most reliable when installed)
+    // 1. Check standard installation location ~/.local/bin FIRST
+    if let Some(home) = dirs::home_dir() {
+        let expected_path = home.join(".local/bin").join(binary_name);
+        if expected_path.exists() {
+            tracing::debug!(
+                "Found {} in expected location ~/.local/bin: {}",
+                binary_name,
+                expected_path.display()
+            );
+            return Ok(expected_path);
+        }
+    }
+
+    // 2. Try to find the binary in PATH (fallback for other install methods or dev environments)
     if let Ok(path) = which(binary_name) {
         tracing::debug!("Found {} in PATH: {}", binary_name, path.display());
         return Ok(path);
     }
 
-    // Also try with standard daemon names
+    // 3. Also try with standard daemon names in PATH (less likely, but for completeness)
     if daemon_name != binary_name {
         if let Ok(path) = which(daemon_name) {
             tracing::debug!("Found {} in PATH: {}", daemon_name, path.display());
@@ -100,7 +113,7 @@ fn get_binary_path(daemon_name: &str) -> Result<PathBuf> {
         }
     }
 
-    // Check in cargo target directory relative to workspace root
+    // 4. Check in cargo target directory relative to workspace root (for development)
     let workspace_root = get_workspace_root()?;
 
     let debug_path = workspace_root.join("target/debug").join(binary_name);
@@ -123,7 +136,7 @@ fn get_binary_path(daemon_name: &str) -> Result<PathBuf> {
         return Ok(release_path);
     }
 
-    // Check standard locations
+    // 5. Check other standard locations (less common for this app, but included)
     let local_bin = PathBuf::from("/usr/local/bin").join(binary_name);
     if local_bin.exists() {
         tracing::debug!(
@@ -140,21 +153,11 @@ fn get_binary_path(daemon_name: &str) -> Result<PathBuf> {
         return Ok(usr_bin);
     }
 
-    // Check in ~/.local/bin
-    if let Some(home) = dirs::home_dir() {
-        let local_bin = home.join(".local/bin").join(binary_name);
-        if local_bin.exists() {
-            tracing::debug!(
-                "Found {} in ~/.local/bin: {}",
-                binary_name,
-                local_bin.display()
-            );
-            return Ok(local_bin);
-        }
-    }
-
     // Log all the paths we checked to help debugging
     tracing::error!("Could not find binary for daemon: {}. Tried:", daemon_name);
+    if let Some(home) = dirs::home_dir() {
+        tracing::error!("  - {}/.local/bin/{}", home.display(), binary_name);
+    }
     tracing::error!("  - which {}", binary_name);
     tracing::error!("  - which {}", daemon_name);
     tracing::error!(
@@ -169,9 +172,7 @@ fn get_binary_path(daemon_name: &str) -> Result<PathBuf> {
     );
     tracing::error!("  - /usr/local/bin/{}", binary_name);
     tracing::error!("  - /usr/bin/{}", binary_name);
-    if let Some(home) = dirs::home_dir() {
-        tracing::error!("  - {}/.local/bin/{}", home.display(), binary_name);
-    }
+
 
     Err(anyhow!("Could not find binary for daemon: {}", daemon_name))
 }
@@ -299,6 +300,8 @@ pub async fn start_daemon(name: &str) -> Result<()> {
         // Start manually
         tracing::debug!("Starting daemon {} manually", name);
         let binary_path = get_binary_path(name)?;
+        // Add logging for the binary path being used
+        tracing::info!("Attempting to execute daemon binary at: {}", binary_path.display());
 
         // Use config directory as working directory
         let config_dir = dirs::config_dir()
@@ -341,8 +344,15 @@ pub async fn start_daemon(name: &str) -> Result<()> {
         cmd.args(&args)
             .current_dir(&config_dir)
             .env("GEMINI_SUITE_CONFIG_PATH", &config_file_path) // Use the correct env var
-            .env("RUST_LOG", "debug") // Set RUST_LOG=debug for verbose logging
-            .stdout(std::fs::File::create(&log_file).context("Failed to create log file")?)
+            .env("RUST_LOG", "info"); // Set RUST_LOG=info for standard logging (was debug)
+
+        // Set specific environment variables for certain daemons
+        if name == "mcp-hostd" {
+            cmd.env("GEMINI_MCP_TIMEOUT", "120"); // Increase MCP server init timeout
+            tracing::info!("Setting GEMINI_MCP_TIMEOUT=120 for {}", name);
+        }
+
+        cmd.stdout(std::fs::File::create(&log_file).context("Failed to create log file")?)
             .stderr(std::fs::File::create(&log_file).context("Failed to create log file")?);
 
         // Start the binary and detach

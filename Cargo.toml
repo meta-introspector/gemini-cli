@@ -11,6 +11,7 @@ members = [
     "install",   # Installer crate for Gemini CLI Suite
     "daemon-manager", # CLI for managing gemini-suite daemons and MCP servers
     "tools",     # Tools for configuration, maintenance, etc.
+    "tests/mcp_server_tester", # Test binary for MCP Python servers
 ]
 
 [workspace.lints]

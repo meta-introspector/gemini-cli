@@ -2,8 +2,12 @@ use gemini_ipc::daemon_messages::{
     BrokerCapabilities, DaemonRequest, DaemonResponse, DaemonResult, ToolDefinition,
 };
 use gemini_mcp::{load_mcp_servers, McpHost};
+use gemini_core::config::{self, UnifiedConfig};
+use gemini_memory::schema::{EmbeddingModelVariant, self};
+use gemini_memory::MemoryStore;
+use gemini_memory::broker::McpHostInterface;
 use log::{debug, error, info, warn};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,6 +16,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
+use std::str::FromStr;
+use gemini_core::rpc_types::{ServerCapabilities, Tool as CoreTool};
 
 // Helper function to determine the socket path
 fn get_socket_path() -> Result<PathBuf, String> {
@@ -28,7 +34,7 @@ fn get_socket_path() -> Result<PathBuf, String> {
 trait McpHostExtensions {
     async fn generate_embedding(&self, text: &str, model_variant: &str)
         -> Result<Vec<f32>, String>;
-    async fn get_broker_capabilities(&self) -> Result<BrokerCapabilities, String>;
+    async fn get_broker_capabilities(&self, internal_memory_store: &Option<Arc<MemoryStore>>) -> Result<BrokerCapabilities, String>;
 }
 
 // Implement extensions for McpHost
@@ -65,9 +71,16 @@ impl McpHostExtensions for Arc<McpHost> {
         }
     }
 
-    async fn get_broker_capabilities(&self) -> Result<BrokerCapabilities, String> {
-        // Get capabilities and filter for the ones needed by the broker
-        let all_caps = self.get_all_capabilities().await;
+    async fn get_broker_capabilities(&self, internal_memory_store: &Option<Arc<MemoryStore>>) -> Result<BrokerCapabilities, String> {
+        // Get capabilities from actual MCP servers
+        let mut all_caps = self.get_all_capabilities().await;
+
+        // Add internally handled memory tools if the store exists
+        if internal_memory_store.is_some() {
+            let internal_tools = get_internal_memory_tool_definitions();
+            all_caps.tools.extend(internal_tools);
+            info!("Added {} internal memory tools to broker capabilities", get_internal_memory_tool_definitions().len());
+        }
 
         // Convert to broker capabilities format
         let tools = all_caps
@@ -80,6 +93,12 @@ impl McpHostExtensions for Arc<McpHost> {
 
         Ok(BrokerCapabilities { tools })
     }
+}
+
+#[derive(Clone)]
+struct DaemonState {
+    host: Arc<McpHost>,
+    memory_store: Option<Arc<MemoryStore>>,
 }
 
 #[tokio::main]
@@ -106,33 +125,64 @@ async fn main() {
         }
     }
 
-    // Load server configurations
-    let configs = match load_mcp_servers() {
-        Ok(configs) => {
-            info!("Loaded {} MCP server configurations", configs.len());
-            configs
-        }
+    // Load MCP server configurations for McpHost
+    let mcp_server_configs = match load_mcp_servers() {
+        Ok(configs) => configs,
         Err(e) => {
             error!("Failed to load MCP server configurations: {}", e);
-            // Clean up the socket dir we might have created
             let _ = fs::remove_file(&socket_path);
             std::process::exit(1);
         }
     };
 
-    // Create MCP Host
-    let mcp_host = match McpHost::new(configs).await {
-        Ok(host) => {
-            info!("MCP Host initialized successfully");
-            Arc::new(host)
-        }
+    // Create MCP Host (implements McpHostInterface)
+    let mcp_host = match McpHost::new(mcp_server_configs).await {
+        Ok(host) => Arc::new(host),
         Err(e) => {
-            error!("Failed to initialize MCP Host: {}", e);
-            // Clean up the socket dir we might have created
+            error!("Unexpected critical error during MCP Host setup: {}", e);
             let _ = fs::remove_file(&socket_path);
             std::process::exit(1);
         }
     };
+    info!("MCP Host initialization completed.");
+
+    // --- Initialize MemoryStore --- 
+    let unified_config = UnifiedConfig::load();
+
+    // Directly access fields, assuming unified_config.memory is not Option
+    let db_path_opt: Option<PathBuf> = unified_config.memory.db_path.clone();
+    
+    // Convert Option<String> to Option<EmbeddingModelVariant>
+    let embedding_variant_opt: Option<EmbeddingModelVariant> = 
+        unified_config.memory.embedding_model_variant.clone().and_then(|s| {
+            match EmbeddingModelVariant::from_str(&s) {
+                Ok(variant) => Some(variant),
+                Err(_) => {
+                    warn!("Invalid embedding_model_variant '{}' in config, using default.", s);
+                    None
+                }
+            }
+        });
+
+    // Pass the extracted options and the McpHost instance to MemoryStore::new
+    let memory_store_instance = match MemoryStore::new(
+        db_path_opt, 
+        embedding_variant_opt, 
+        Some(mcp_host.clone() as Arc<dyn McpHostInterface + Send + Sync>)
+    ).await {
+        Ok(store) => {
+            info!("Initialized embedded MemoryStore successfully.");
+            Some(Arc::new(store))
+        }
+        Err(e) => {
+            error!(
+                "Failed to initialize embedded MemoryStore: {}. Memory operations via MCP will fail.",
+                e
+            );
+            None
+        }
+    };
+    // --- End MemoryStore Init --- 
 
     // Bind the Unix listener
     let listener = match UnixListener::bind(&socket_path) {
@@ -195,11 +245,14 @@ async fn main() {
             // Accept new IPC connection
             Ok((stream, _addr)) = listener.accept() => {
                 info!("Accepted new IPC connection");
-                let host_clone = Arc::clone(&mcp_host); // Clone Arc for the task
+                let state = DaemonState {
+                    host: Arc::clone(&mcp_host),
+                    memory_store: memory_store_instance.clone(),
+                };
 
                 // Spawn a task to handle this client connection
                 tokio::spawn(async move {
-                    handle_client(stream, host_clone).await;
+                    handle_client(stream, state).await;
                 });
             }
             // Wait for shutdown signal
@@ -235,7 +288,7 @@ async fn main() {
 }
 
 /// Handles communication with a single connected client.
-async fn handle_client(mut stream: UnixStream, host: Arc<McpHost>) {
+async fn handle_client(mut stream: UnixStream, state: DaemonState) {
     info!("Client handler started for connection.");
     let (mut reader, mut writer) = stream.split();
 
@@ -284,7 +337,7 @@ async fn handle_client(mut stream: UnixStream, host: Arc<McpHost>) {
         debug!("Received request: {:?}", request);
 
         // 4. Process request and generate response
-        let response = process_request(request, Arc::clone(&host)).await;
+        let response = process_request(request, state.clone()).await;
 
         // 5. Send response
         match write_response(&mut writer, &response).await {
@@ -300,17 +353,28 @@ async fn handle_client(mut stream: UnixStream, host: Arc<McpHost>) {
 }
 
 /// Processes a deserialized DaemonRequest and returns a DaemonResponse.
-async fn process_request(request: DaemonRequest, host: Arc<McpHost>) -> DaemonResponse {
+async fn process_request(request: DaemonRequest, state: DaemonState) -> DaemonResponse {
+    let host = state.host;
+    let memory_store = state.memory_store;
+
     match request {
         DaemonRequest::GetCapabilities => {
             info!("Processing GetCapabilities request");
-            let caps = host.get_all_capabilities().await;
+            // Get capabilities from actual MCP servers
+            let mut caps = host.get_all_capabilities().await;
             info!(
-                "Retrieved capabilities for {} tools and {} resources",
+                "Retrieved base capabilities for {} tools and {} resources",
                 caps.tools.len(),
                 caps.resources.len()
             );
-            DaemonResponse::success(DaemonResult::Capabilities(caps))
+            // Manually add internal memory tools if store exists
+            if memory_store.is_some() {
+                let internal_tools = get_internal_memory_tool_definitions();
+                let count = internal_tools.len();
+                caps.tools.extend(internal_tools);
+                 info!("Added {} internal memory tools to reported capabilities", count);
+            }
+            DaemonResponse::success(DaemonResult::Capabilities(caps)) // Return the modified caps
         }
         DaemonRequest::ExecuteTool { server, tool, args } => {
             info!(
@@ -320,6 +384,32 @@ async fn process_request(request: DaemonRequest, host: Arc<McpHost>) -> DaemonRe
                 serde_json::to_string(&args).unwrap_or_else(|_| "unable to serialize".to_string())
             );
 
+            // --- Intercept memory-store-mcp calls --- 
+            if server == "memory-store-mcp" {
+                if let Some(ref memory_store_arc) = memory_store { // Use ref memory_store_arc
+                    // Handle memory operations internally
+                    debug!("Intercepted call for internal memory store: {}", tool);
+                    match handle_internal_memory_tool(&tool, args, &*memory_store_arc).await { // Dereference Arc
+                        Ok(result_value) => {
+                             debug!(
+                                "Internal memory tool execution succeeded with result: {}",
+                                serde_json::to_string(&result_value).unwrap_or_else(|_| "<unserializable>".to_string())
+                            );
+                             return DaemonResponse::success(DaemonResult::ExecutionOutput(result_value));
+                        }
+                        Err(e) => {
+                            error!("Internal memory tool '{}' failed: {}", tool, e);
+                            return DaemonResponse::error(format!("Internal memory tool error: {}", e));
+                        }
+                    }
+                } else {
+                     error!("Received request for memory-store-mcp, but internal store is not initialized.");
+                     return DaemonResponse::error("Internal memory store not available".to_string());
+                }
+            }
+            // --- End Intercept --- 
+
+            // If not intercepted, proceed with standard MCP call
             match host.execute_tool(&server, &tool, args).await {
                 Ok(result_value) => {
                     debug!(
@@ -357,8 +447,7 @@ async fn process_request(request: DaemonRequest, host: Arc<McpHost>) -> DaemonRe
         }
         DaemonRequest::GetBrokerCapabilities => {
             info!("Getting broker capabilities");
-            // Check if memory broker is available and get its capabilities
-            match host.get_broker_capabilities().await {
+            match host.get_broker_capabilities(&memory_store).await {
                 Ok(caps) => {
                     info!(
                         "Retrieved broker capabilities with {} tools",
@@ -414,4 +503,121 @@ async fn write_response<W: AsyncWriteExt + Unpin>(
 
     debug!("Response successfully written and flushed");
     Ok(())
+}
+
+// --- NEW HELPER FUNCTION --- 
+// Defines the tools handled internally by the embedded MemoryStore
+fn get_internal_memory_tool_definitions() -> Vec<CoreTool> {
+    vec![
+        CoreTool {
+            name: "memory-store-mcp/store_memory".to_string(),
+            description: Some("Stores a memory item (key, content, tags).".to_string()),
+            parameters: None, // Define schema if needed
+        },
+         CoreTool {
+            name: "memory-store-mcp/list_all_memories".to_string(),
+            description: Some("Lists all stored memory items.".to_string()),
+            parameters: None,
+        },
+        CoreTool {
+            name: "memory-store-mcp/retrieve_memory_by_key".to_string(),
+            description: Some("Retrieves a memory item by its key.".to_string()),
+            parameters: None,
+        },
+        CoreTool {
+            name: "memory-store-mcp/retrieve_memory_by_tag".to_string(),
+            description: Some("Retrieves memory items matching a specific tag.".to_string()),
+            parameters: None,
+        },
+        CoreTool {
+            name: "memory-store-mcp/delete_memory_by_key".to_string(),
+            description: Some("Deletes a memory item by its key.".to_string()),
+            parameters: None,
+        },
+        CoreTool {
+            name: "memory-store-mcp/semantic_search".to_string(),
+            description: Some("Performs semantic search over memories.".to_string()),
+            parameters: None, // TODO: Define input schema (query_embedding, k, filter)
+        },
+        // Add other internal tools like add_vector_memory if implemented
+    ]
+}
+
+// --- NEW FUNCTION: Handle Internal Memory Tool Calls --- 
+async fn handle_internal_memory_tool(
+    tool_name: &str,
+    args: Value,
+    memory_store: &MemoryStore,
+) -> Result<Value, String> {
+    match tool_name {
+        "store_memory" => {
+            let key = args["key"].as_str().ok_or("Missing string arg: key")?.to_string();
+            let content = args["content"].as_str().ok_or("Missing string arg: content")?.to_string();
+            let tags: Vec<String> = args["tags"].as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            // Embeddings/metadata might be handled separately or passed if available
+            // For now, basic implementation
+            memory_store.add_memory(&key, &content, tags, None, None, None).await
+                 .map_err(|e| format!("Failed to store memory: {}", e))?;
+            Ok(json!({ "success": true, "message": format!("Memory stored with key: {}", key) }))
+        }
+        "list_all_memories" => {
+             let memories = memory_store.get_all_memories().await
+                 .map_err(|e| format!("Failed to list memories: {}", e))?;
+             // Convert memories to JSON compatible format (consider timestamp formatting)
+             let result_memories = memories.into_iter().map(|m| json!({
+                 "key": m.key,
+                 "content": m.value, // Assuming value is String
+                 "tags": m.tags,
+                 "timestamp": m.timestamp, // Keep as number or format?
+                 // Add other fields as needed
+             })).collect::<Vec<_>>();
+             Ok(json!({ "memories": result_memories }))
+        }
+         "retrieve_memory_by_key" => {
+            let key = args["key"].as_str().ok_or("Missing string arg: key")?;
+            match memory_store.get_by_key(key).await {
+                Ok(Some(mem)) => Ok(json!({
+                     "memory": {
+                         "key": mem.key,
+                         "content": mem.value,
+                         "tags": mem.tags,
+                         "timestamp": mem.timestamp
+                    }
+                 })),
+                Ok(None) => Err(format!("Memory with key '{}' not found", key)),
+                Err(e) => Err(format!("Failed to retrieve memory by key: {}", e)),
+            }
+        }
+        "retrieve_memory_by_tag" => {
+             let tag = args["tag"].as_str().ok_or("Missing string arg: tag")?;
+             let memories = memory_store.get_by_tag(tag).await
+                 .map_err(|e| format!("Failed to retrieve memory by tag: {}", e))?;
+             let result_memories = memories.into_iter().map(|m| json!({
+                 "key": m.key,
+                 "content": m.value,
+                 "tags": m.tags,
+                 "timestamp": m.timestamp
+             })).collect::<Vec<_>>();
+             Ok(json!({ "memories": result_memories }))
+        }
+        "delete_memory_by_key" => {
+             let key = args["key"].as_str().ok_or("Missing string arg: key")?;
+             let count = memory_store.delete_by_key(key).await
+                 .map_err(|e| format!("Failed to delete memory: {}", e))?;
+             Ok(json!({ "success": true, "message": format!("Memory with key '{}' deleted (count: {})", key, count) }))
+        }
+        "semantic_search" => {
+            // TODO: Implement semantic search call
+            // 1. Extract query embedding from args
+            // 2. Extract k, filters etc from args
+            // 3. Call memory_store.query_memories(...)
+            // 4. Format results
+            warn!("Internal call to unimplemented tool: semantic_search");
+            Err("semantic_search not yet implemented internally".to_string())
+        }
+        // Add other memory tools here (e.g., add_vector_memory)
+        _ => Err(format!("Unknown internal memory tool: {}", tool_name)),
+    }
 }

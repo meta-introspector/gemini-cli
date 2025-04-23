@@ -6,10 +6,10 @@
 GEMINI_CLI="/home/james/.local/bin/gemini-cli-bin"
 
 # Check if the binary exists
-if [ ! -x "" ]; then
-    echo "Error: gemini-cli-bin not found at " >&2
+if [ ! -x "$GEMINI_CLI" ]; then
+    echo "Error: gemini-cli-bin not found at $GEMINI_CLI" >&2
     exit 1
 fi
 
 # Forward all input to the binary with the --memory-store-mcp flag
-exec "" --memory-store-mcp "gemini-cli-bin"
+exec "$GEMINI_CLI" --memory-store-mcp "$@"

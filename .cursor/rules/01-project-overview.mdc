@@ -16,5 +16,5 @@ See the main [README.md](mdc:README.md) for a full overview.
 *   **`gemini-mcp` ([mcp/README.md](mdc:mcp/README.md))**: Implements the Model Context Protocol (MCP) **host** side. Manages discovering, launching, and communicating with MCP **servers** (tools). Includes the `mcp-hostd` binary and built-in server implementations.
 *   **`gemini-memory` ([memory/README.md](mdc:memory/README.md))**: Implements persistent semantic memory using LanceDB. Relies on an MCP host (`McpHostInterface`) for embedding generation.
 *   **`gemini-cli` ([cli/README.md](mdc:cli/README.md))**: The main command-line interface. Integrates the other crates for user interaction, tool use, and memory.
-*   **`HAPPE` ([HAPPE/README.md](mdc:HAPPE/README.md))**: Host Application Environment daemon. Manages interactions between user, LLM, `IDA`, and MCP servers. Intended as the primary execution environment.
-*   **`IDA` ([IDA/README.md](mdc:IDA/README.md))**: Internal Dialogue App daemon. Manages persistent memory and background cognitive tasks, communicating with `HAPPE` via IPC.
+*   **`HAPPE` (@happe/README.md)**: Host Application Environment daemon. Manages interactions between user, LLM, `IDA`, and MCP servers. Intended as the primary execution environment.
+*   **`IDA` (@ida/README.md)**: Internal Dialogue App daemon. Manages persistent memory and background cognitive tasks, communicating with `HAPPE` via IPC.

@@ -1,0 +1,22 @@
+// End-to-End Query Flow (Radial)
+graph QueryFlowRadial {
+	graph [bgcolor=white fontname=Arial fontsize=14 overlap=false splines=true]
+	node [fontname=Arial fontsize=12 margin="0.3,0.2" style=filled]
+	edge [fontname=Arial fontsize=10 len=1.5]
+	happe [label="HAPPE
+Daemon" fillcolor="#FFF2CC" height=1.5 pos="0,0!" shape=circle style="filled,bold" width=1.5]
+	user [label="End User" fillcolor="#D4E8FC" pos="5.0,0.0!" shape=box]
+	llm [label="Main LLM
+API" fillcolor="#ADD8E6" pos="1.5450849718747373,4.755282581475767!" shape=box]
+	ida [label="IDA
+Daemon" fillcolor="#D8BFD8" pos="-4.045084971874736,2.9389262614623664!" shape=box]
+	mem_mcp [label="Memory
+MCP Server" fillcolor="#FFDAB9" pos="-4.045084971874738,-2.938926261462365!" shape=cylinder]
+	other_mcp [label="Other MCP
+Server(s)" fillcolor="#E0FFE0" pos="1.5450849718747361,-4.755282581475768!" shape=component]
+	happe -- user
+	happe -- llm
+	happe -- ida
+	happe -- mem_mcp
+	happe -- other_mcp
+}

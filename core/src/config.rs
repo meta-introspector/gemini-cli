@@ -10,7 +10,6 @@ use toml; // Explicitly import toml // Explicitly import dirs
 
 /// Configuration for the Gemini API
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case")]
 pub struct GeminiApiConfig {
     /// API key for the Gemini API
     pub api_key: Option<String>,

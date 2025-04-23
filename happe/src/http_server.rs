@@ -140,22 +140,13 @@ async fn handle_query(
         &state.config,
         &state.mcp_client,
         &state.gemini_client,
-        &session,
+        &mut session,
         payload.query.clone(),
     )
     .await
     {
         Ok(response) => {
-            // Create turn data and update session history
-            let turn = ConversationTurn {
-                user_query: payload.query,
-                llm_response: response.clone(),
-                retrieved_memories: vec![],
-            };
-            
-            coordinator::update_session_history(&mut session, turn);
-            
-            // Save the session
+            // Save the session (state was potentially modified in process_query)
             if let Err(e) = state.session_store.save_session(session.clone()).await {
                 error!(error = %e, "Failed to save session");
                 // Continue despite error
