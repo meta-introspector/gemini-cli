@@ -1,1 +1,1 @@
-nix develop .#devShells.aarch64-linux.default --verbose -v -v -v -v
+nix develop --verbose -v -v -v -v
