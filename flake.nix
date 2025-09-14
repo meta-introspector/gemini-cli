@@ -12,7 +12,7 @@
     in
     {
       devShells.${system}.default = pkgs.mkShell {
-        buildInputs = [ pkgs.nodejs_22 ];
+        buildInputs = [ pkgs.nodejs_21 ];
         # Add any other development tools needed for gemini-cli here
       };
     };
