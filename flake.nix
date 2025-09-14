@@ -7,7 +7,7 @@
 
   outputs = { self, nixpkgs }:
     let
-      system = "x86_64-linux"; # Assuming x86_64-linux, adjust if needed
+      system = "aarch64-linux"; # Assuming x86_64-linux, adjust if needed
       pkgs = import nixpkgs { inherit system; };
     in
     {
