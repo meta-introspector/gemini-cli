@@ -13,7 +13,7 @@
       naerskLib = naersk.lib.${system};
     in
     {
-      packages.${system}.default = naerskLib.buildRustPackage {
+      packages.${system}.default = naerskLib.buildPackage {
         pname = "rust-crate-searcher";
         version = "0.1.0";
 
