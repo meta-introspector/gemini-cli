@@ -29,8 +29,7 @@
             buildInputs = [ pkgs.ripgrep ];
 
             preConfigure = ''
-              mkdir -p packages/generated
-              echo "export const GIT_COMMIT_INFO = { commitHash: ''${finalAttrs.src.rev or "dirty"}'' };" > packages/generated/git-commit.ts
+              ${pkgs.bash}/bin/bash ./scripts/generate-git-info.sh "${finalAttrs.src.rev or "dirty"}"
             '';
 
             installPhase = ''
