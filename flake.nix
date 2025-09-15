@@ -2,47 +2,77 @@
   description = "Development shell for gemini-cli source code";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-23.11"; # Pin to a stable NixOS release
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, ... }:
     let
-      system = "aarch64-linux"; # Assuming x86_64-linux, adjust if needed
-      pkgs = import nixpkgs { inherit system; };
-
-      geminiWrapper = geminiCliOutput: pkgs.writeShellApplication {
-        name = "gemini";
-        runtimeInputs = [ pkgs.nodejs_21 ];
-        text = ''
-          exec ${pkgs.nodejs_21}/bin/node ${geminiCliOutput}/bin/gemini-cli-dist/index.js "$@"
-        '';
-      };
+      systems = [ "aarch64-linux" "x86_64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
     in
     {
-      packages.${system}.default = pkgs.stdenv.mkDerivation rec {
-        pname = "gemini-cli";
-        version = "0.6.0-nightly"; # You might want to get this from package.json
+      packages = forAllSystems (system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
+          default = pkgs.buildNpmPackage (finalAttrs: {
+            pname = "gemini-cli";
+            version = "0.3.4";
 
-        src = self;
+            src = self;
 
-        nativeBuildInputs = [ pkgs.nodejs_21 pkgs.git ];
+            
 
-        installPhase = ''
-          # Due to persistent memory corruption issues with npm in the Nix build sandbox,
-          # we are assuming the project is pre-built outside of Nix.
-          # The 'packages/cli/dist' directory is expected to exist in the source.
+            npmDepsHash = "sha256-q7E5YEMjHs9RvfT4ctzltqHr/+cCh3M+G6D2MkLiJFg=";
 
-          mkdir -p $out/bin
-          cp -r packages/cli/dist $out/bin/gemini-cli-dist
+            buildInputs = [ pkgs.ripgrep ];
 
-          # Install the gemini wrapper
-          cp ${ (geminiWrapper pkgs.stdenv.outPath) }/bin/gemini $out/bin/gemini
-        '';
-      };
+            preConfigure = ''
+              mkdir -p packages/generated
+              echo "export const GIT_COMMIT_INFO = { commitHash: ''${finalAttrs.src.rev or "dirty"}'' };" > packages/generated/git-commit.ts
+            '';
 
-      devShells.${system}.default = pkgs.mkShell {
-        buildInputs = [ pkgs.nodejs_21 pkgs.which pkgs.git ];
-        # Add any other development tools needed for gemini-cli here
-      };
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/{bin,share/gemini-cli}
+
+              cp -r node_modules $out/share/gemini-cli/
+
+              rm -f $out/share/gemini-cli/node_modules/@google/gemini-cli
+              rm -f $out/share/gemini-cli/node_modules/@google/gemini-cli-core
+              rm -f $out/share/gemini-cli/node_modules/@google/gemini-cli-a2a-server
+              rm -f $out/share/gemini-cli/node_modules/@google/gemini-cli-test-utils
+              rm -f $out/share/gemini-cli/node_modules/gemini-cli-vscode-ide-companion
+              cp -r packages/cli $out/share/gemini-cli/node_modules/@google/gemini-cli
+              cp -r packages/core $out/share/gemini-cli/node_modules/@google/gemini-cli-core
+              cp -r packages/a2a-server $out/share/gemini-cli/node_modules/@google/gemini-cli-a2a-server
+
+              ln -s $out/share/gemini-cli/node_modules/@google/gemini-cli/dist/index.js $out/bin/gemini
+              chmod +x "$out/bin/gemini"
+
+              runHook postInstall
+            '';
+
+            meta = {
+              description = "AI agent that brings the power of Gemini directly into your terminal";
+              homepage = "https://github.com/google-gemini/gemini-cli";
+              license = pkgs.lib.licenses.asl20;
+              sourceProvenance = with pkgs.lib.sourceTypes; [ fromSource ];
+              platforms = pkgs.lib.platforms.all;
+              mainProgram = "gemini";
+            };
+          });
+        });
+
+      devShells = forAllSystems (system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
+          default = pkgs.mkShell {
+            buildInputs = [ pkgs.nodejs_latest pkgs.which pkgs.git ];
+          };
+        });
     };
 }

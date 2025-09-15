@@ -322,7 +322,7 @@ class GrepToolInvocation extends BaseToolInvocation<
     try {
       const rgPath = await ensureRgPath();
       const output = await new Promise<string>((resolve, reject) => {
-        const child = spawn(rgPath, rgArgs, {
+        const child = spawn('rg', rgArgs, {
           windowsHide: true,
         });
 
