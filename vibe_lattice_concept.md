@@ -1,0 +1,1 @@
+We can now create a lattice of BERT embeddings to start with in Rust, large vectors derived from the GitHub repo name itself and structured lattice like queries adding to it. The theory is that these large vectors will have a lattice like quotient structure.
