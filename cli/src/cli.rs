@@ -9,6 +9,10 @@ pub struct Args {
     #[arg(index = 1)] // Positional argument
     pub prompt: Option<String>,
 
+    /// Path to one or more task files to execute in batch mode
+    #[arg(short, long)]
+    pub task_files: Option<Vec<PathBuf>>,
+
     /// Enter interactive chat mode
     #[arg(short, long, default_value_t = false)]
     pub interactive: bool,
@@ -16,6 +20,10 @@ pub struct Args {
     /// Start a new session, ignoring any existing session ID
     #[arg(long, default_value_t = false)]
     pub new_session: bool,
+
+    /// Enable verbose output
+    #[arg(short, long, default_value_t = false)]
+    pub verbose: bool,
 
     /// List active sessions and let the user select one
     #[arg(long, default_value_t = false)]

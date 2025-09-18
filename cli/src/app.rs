@@ -9,7 +9,7 @@ use crate::happe_client::HappeClient;
 use crate::output::print_happe_response;
 
 /// Runs a single query mode, sending one prompt to the HAPPE daemon and displaying the response
-pub async fn run_single_query(prompt: String, happe_client: &HappeClient) -> Result<()> {
+pub async fn run_single_query(prompt: String, happe_client: &HappeClient) -> Result<(String, Option<String>)> {
     info!("Running single query: {}", prompt);
     info!("Using session ID: {}", happe_client.session_id());
 
@@ -32,7 +32,7 @@ pub async fn run_single_query(prompt: String, happe_client: &HappeClient) -> Res
             if let Some(error) = response.error {
                 error!("HAPPE error: {}", error);
                 println!("Error: {}", error);
-                return Ok(());
+                return Ok(("".to_string(), Some(error)));
             }
 
             // Log session ID if one was returned
@@ -41,6 +41,7 @@ pub async fn run_single_query(prompt: String, happe_client: &HappeClient) -> Res
             }
 
             print_happe_response(&response.response);
+            Ok((response.response, None))
         }
         Err(e) => {
             spinner.finish_and_clear();
@@ -48,8 +49,6 @@ pub async fn run_single_query(prompt: String, happe_client: &HappeClient) -> Res
             return Err(e.context("Failed to send query to HAPPE daemon"));
         }
     }
-
-    Ok(())
 }
 
 /// Runs an interactive chat session with the HAPPE daemon

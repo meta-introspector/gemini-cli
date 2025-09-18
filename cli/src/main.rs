@@ -21,6 +21,9 @@ use crate::happe_client::HappeClient;
 use crate::logging::{log_error, log_info};
 use crate::output::print_usage_instructions;
 use crate::session_manager::SessionManager;
+use std::fs;
+use std::io::Write;
+use chrono::Local;
 
 /// Main function - Connects to HAPPE daemon and sends queries
 #[tokio::main]
@@ -28,20 +31,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Load unified configuration
     let config = UnifiedConfig::load();
 
-    // Get log level from config or use default
-    let log_level = config
-        .cli
-        .log_level
-        .as_deref()
-        .map(|level| match level.to_lowercase().as_str() {
-            "trace" => LevelFilter::Trace,
-            "debug" => LevelFilter::Debug,
-            "info" => LevelFilter::Info,
-            "warn" => LevelFilter::Warn,
-            "error" => LevelFilter::Error,
-            _ => LevelFilter::Info,
-        })
-        .unwrap_or(LevelFilter::Info);
+    // Parse command-line arguments early to use `verbose` flag for logging
+    let args = Args::parse();
+
+    // Determine log level based on verbose flag and config
+    let log_level = if args.verbose {
+        LevelFilter::Debug // Or Trace, for maximum verbosity
+    } else {
+        config
+            .cli
+            .log_level
+            .as_deref()
+            .map(|level| match level.to_lowercase().as_str() {
+                "trace" => LevelFilter::Trace,
+                "debug" => LevelFilter::Debug,
+                "info" => LevelFilter::Info,
+                "warn" => LevelFilter::Warn,
+                "error" => LevelFilter::Error,
+                _ => LevelFilter::Info,
+            })
+            .unwrap_or(LevelFilter::Info)
+    };
 
     // Initialize logger with configured log level
     env_logger::Builder::from_env(
@@ -51,9 +61,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Load environment variables (for backward compatibility)
     dotenv().ok();
-
-    // Parse command-line arguments
-    let args = Args::parse();
 
     // Get HAPPE socket path from args or config
     let happe_ipc_path = args
@@ -123,6 +130,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
             log_error(&format!("Error processing prompt: {}", e));
             // Error is already printed in run_single_query
         }
+    } else if let Some(task_files) = args.task_files {
+        let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+        let batch_output_dir = format!("batch_run_{}", timestamp);
+        fs::create_dir_all(&batch_output_dir)?;
+        log_info(&format!("Batch run output directory: {}", batch_output_dir));
+
+        for task_file_path in task_files {
+            let task_name = task_file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown_task");
+            let task_output_dir = format!("{}/{}", batch_output_dir, task_name);
+            fs::create_dir_all(&task_output_dir)?;
+
+            log_info(&format!("Processing task: {}", task_name));
+
+            let prompt_content = fs::read_to_string(&task_file_path)?;
+            fs::write(format!("{}/prompt.txt", task_output_dir), &prompt_content)?;
+
+            match crate::app::run_single_query(prompt_content.clone(), &happe_client).await {
+                Ok((response, error)) => {
+                    fs::write(format!("{}/response.txt", task_output_dir), response)?;
+                    if let Some(err) = error {
+                        fs::write(format!("{}/error.txt", task_output_dir), err)?;
+                    }
+                }
+                Err(e) => {
+                    let error_message = format!("Failed to execute task {}: {}", task_name, e);
+                    log_error(&error_message);
+                    fs::write(format!("{}/error.txt", task_output_dir), error_message)?;
+                }
+            }
+        }
+        // TODO: Implement Nix derivation generation here, using the batch_output_dir as input.
+        // This would involve creating a .nix file that captures the inputs and outputs
+        // of this batch run for reproducibility.
     } else {
         // No prompt and not interactive, show usage
         print_usage_instructions();
