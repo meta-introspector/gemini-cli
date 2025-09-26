@@ -1,3 +1,9 @@
 [submodule "vendor/node2nix"]
 	path = vendor/node2nix
 	url = https://github.com/meta-introspector/node2nix
+[submodule "vendor/node"]
+	path = vendor/node
+	url = https://github.com/meta-introspector/node
+[submodule "vendor/nodejs-mobile"]
+	path = vendor/nodejs-mobile
+	url = https://github.com/meta-introspector/nodejs-mobile
