@@ -4,6 +4,7 @@
   inputs = {
 #    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     nixpkgs.url = "github:meta-introspector/nixpkgs?ref=feature/CRQ-016-nixify";
+    node2nix.url = "github:meta-introspector/node2nix?ref=feature/gemini-cli";
   };
 
   outputs = { self, nixpkgs, ... }:
@@ -12,26 +13,31 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in
     {
-      packages = forAllSystems (system:
-        let
-          pkgs = import nixpkgs { inherit system; };
-        in
-        {
-          default = pkgs.buildNpmPackage (finalAttrs: {
-            pname = "gemini-cli";
-            version = "0.3.4";
-
-            src = self;
+              packages = forAllSystems (system:
+                let
+                  pkgs = import nixpkgs { inherit system; };
+                in
+                {
+                                                      default = pkgs.buildNpmPackage (finalAttrs: {
+                                                        pname = "gemini-cli";
+                                                        version = "0.3.4";
+                                                      });                              test-node2nix-failure = import ./test_node2nix_failure.nix { inherit pkgs; };            src = self;
 
             
 
-            npmDepsHash = "sha256-q7E5YEMjHs9RvfT4ctzltqHr/+cCh3M+G6D2MkLiJFg=";
-
-            buildInputs = [ pkgs.ripgrep ];
+            npmDepsHash = "sha256-HxBWuaYo25WGxEcXNSOC9yz3JIpfmDb7aryQwp0WtMk=";
 
             preConfigure = ''
+              export PKG_CONFIG_PATH=${pkgs.libsecret.dev}/lib/pkgconfig:$PKG_CONFIG_PATH
+              export NIX_CFLAGS_COMPILE="-I${pkgs.libsecret.dev}/include/libsecret-1 -I${pkgs.glib.dev}/include/gio-unix-2.0 -I${pkgs.glib.dev}/include -I${pkgs.glib.dev}/include/glib-2.0 -I${pkgs.glib}/lib/glib-2.0/include"
+              export NIX_LDFLAGS="-L${pkgs.libsecret}/lib -L${pkgs.glib}/lib -lsecret-1 -lgio-2.0 -lgobject-2.0 -lglib-2.0"
+              export npm_config_keytar_build_from_source=false
               ${pkgs.bash}/bin/bash ./scripts/generate-git-info.sh "${finalAttrs.src.rev or "dirty"}"
             '';
+
+            nativeBuildInputs = [ pkgs.ripgrep pkgs.pkg-config pkgs.libsecret pkgs.glib pkgs.gcc pkgs.gnumake ];
+
+
 
             installPhase = ''
               runHook preInstall
@@ -62,7 +68,7 @@
               platforms = pkgs.lib.platforms.all;
               mainProgram = "gemini";
             };
-          });
+          
         });
 
       devShells = forAllSystems (system:
