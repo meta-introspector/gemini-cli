@@ -1,0 +1,4 @@
+warning: Git tree '/data/data/com.termux.nix/files/home/pick-up-nix2/vendor/external/gemini-cli' is dirty
+this derivation will be built:
+  /nix/store/smqb8mw5fx1qjyh53qv7xznr47ryhy8z-gemini-cli-0.8.0-nightly.20250925.b1da8c21.drv
+building '/nix/store/smqb8mw5fx1qjyh53qv7xznr47ryhy8z-gemini-cli-0.8.0-nightly.20250925.b1da8c21.drv'...
