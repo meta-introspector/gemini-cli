@@ -1,8 +1,8 @@
 # Makefile for gemini-cli
 # Enhanced with Nix integration
 
-.PHONY: help install build build-sandbox build-all test lint format preflight clean start debug release run-npx create-alias
-.PHONY: help-nix clean-nix nix-build nix-test nix-shell nix-run inspect-bundle check-nix-deps nix-flake-update
+.PHONY: help install build build-sandbox build-all test lint format preflight clean start debug release run-npx create-alias lint-nix
+.PHONY: help-nix clean-nix nix-build nix-test nix-shell nix-run inspect-bundle check-nix-deps nix-flake-update lint-nix
 
 help:
 	@echo "Makefile for gemini-cli"
@@ -14,6 +14,7 @@ help:
 	@echo "  make build-all        - Build the main project and sandbox"
 	@echo "  make test             - Run the test suite"
 	@echo "  make lint             - Lint the code"
+	@echo "  make lint-nix         - Lint Nix files with statix"
 	@echo "  make format           - Format the code"
 	@echo "  make preflight        - Run formatting, linting, and tests"
 	@echo "  make clean            - Remove generated files"
@@ -31,6 +32,11 @@ help:
 	@echo "  make inspect-bundle   - Inspect current bundle directory"
 	@echo "  make check-nix-deps   - Verify Nix dependencies are available"
 	@echo "  make verify           - Quick Nix verification workflow"
+
+lint-nix:
+	@echo "=== Linting Nix Files with Statix ==="
+	nix develop --command bash -c "statix check ."
+	@echo "✓ Nix linting complete"
 
 install:
 	npm install

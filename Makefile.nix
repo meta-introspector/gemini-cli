@@ -1,7 +1,7 @@
 # Nix-enhanced Makefile for Gemini CLI
 # Provides Nix-specific operations alongside existing npm functionality
 
-.PHONY: help-nix clean-nix nix-build nix-test nix-shell nix-run inspect-bundle check-nix-deps nix-flake-update
+.PHONY: help-nix clean-nix nix-build nix-test nix-shell nix-run inspect-bundle check-nix-deps nix-flake-update lint-nix
 
 # Nix-specific help (call original help first)
 help-nix: help
@@ -14,7 +14,14 @@ help-nix: help
 	@echo "  inspect-bundle    - Inspect current bundle directory"
 	@echo "  check-nix-deps    - Verify Nix dependencies are available"
 	@echo "  nix-flake-update  - Update flake.lock"
+	@echo "  lint-nix          - Lint Nix files with statix"
 	@echo "  clean-nix         - Clean Nix build results"
+
+# Lint Nix files with statix
+lint-nix:
+	@echo "=== Linting Nix Files with Statix ==="
+	nix develop --command bash -c "statix check ."
+	@echo "✓ Nix linting complete"
 
 # Check Nix dependencies
 check-nix-deps:
