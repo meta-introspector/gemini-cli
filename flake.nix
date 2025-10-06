@@ -82,7 +82,7 @@
           buildInputs = [
             pkgs.nodejs_22
             node2nix-src.packages.${system}.default
-            pkgs.nix-statix
+            pkgs.statix
           ];
         };
         
