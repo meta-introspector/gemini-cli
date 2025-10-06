@@ -1,8 +1,7 @@
 # Makefile for gemini-cli
 # Enhanced with Nix integration
 
-.PHONY: help install build build-sandbox build-all test lint format preflight clean start debug release run-npx create-alias lint-nix
-.PHONY: help-nix clean-nix nix-build nix-test nix-shell nix-run inspect-bundle check-nix-deps nix-flake-update lint-nix
+.PHONY: help install build build-sandbox build-all test lint format preflight clean start debug release run-npx create-alias help-nix clean-nix nix-build nix-test nix-shell nix-run inspect-bundle check-nix-deps nix-flake-update lint-nix nix-flake-show test-all dev-setup
 
 help:
 	@echo "Makefile for gemini-cli"
@@ -25,18 +24,18 @@ help:
 	@echo "  make create-alias     - Create a 'gemini' alias for your shell"
 	@echo ""
 	@echo "=== Nix Integration ==="
+	@echo "  make help-nix         - Show Nix-specific help"
 	@echo "  make nix-build        - Build the Nix package (includes bundle)"
-	@echo "  make nix-test         - Test the Nix-built package" 
+	@echo "  make nix-test         - Test the Nix-built package"
 	@echo "  make nix-shell        - Enter Nix development shell"
 	@echo "  make nix-run          - Run gemini via Nix (nix run)"
 	@echo "  make inspect-bundle   - Inspect current bundle directory"
 	@echo "  make check-nix-deps   - Verify Nix dependencies are available"
+	@echo "  make nix-flake-update - Update flake.lock"
+	@echo "  make nix-flake-show   - Show flake information"
+	@echo "  make clean-nix        - Clean Nix build results"
 	@echo "  make verify           - Quick Nix verification workflow"
-
-lint-nix:
-	@echo "=== Linting Nix Files with Statix ==="
-	nix develop --command bash -c "statix check ."
-	@echo "✓ Nix linting complete"
+	@echo "  make dev-setup        - Complete development setup with Nix and npm"
 
 install:
 	npm install
@@ -78,6 +77,30 @@ create-alias:
 	scripts/create_alias.sh
 
 # === Nix Integration Targets ===
+
+# Nix-specific help
+help-nix:
+	help
+	@echo ""
+	@echo "=== Nix-Enhanced Targets ==="
+	@echo "  nix-build         - Build the Nix package (includes bundle)"
+	@echo "  nix-test          - Test the Nix-built package"
+	@echo "  nix-shell         - Enter Nix development shell"
+	@echo "  nix-run           - Run gemini via Nix (nix run)"
+	@echo "  inspect-bundle    - Inspect current bundle directory"
+	@echo "  check-nix-deps    - Verify Nix dependencies are available"
+	@echo "  nix-flake-update  - Update flake.lock"
+	@echo "  lint-nix          - Lint Nix files with statix"
+	@echo "  clean-nix         - Clean Nix build results"
+	@echo "  nix-flake-show    - Show flake information"
+	@echo "  test-all          - Run all npm and Nix tests"
+	@echo "  dev-setup         - Complete development setup with Nix and npm"
+
+# Lint Nix files with statix
+lint-nix:
+	@echo "=== Linting Nix Files with Statix ==="
+	nix develop --command bash -c "statix check --ignore Makefile.nix **/*.nix"
+	@echo "✓ Nix linting complete"
 
 # Check Nix dependencies
 check-nix-deps:
@@ -156,3 +179,19 @@ verify: check-nix-deps inspect-bundle nix-build nix-test
 nix-flake-show:
 	@echo "=== Flake Information ==="
 	nix flake show
+
+# Enhanced build that includes both npm and nix
+build-all: build nix-build
+	@echo "=== All Builds Complete ==="
+
+# Enhanced test that includes both npm and nix
+test-all: test nix-test
+	@echo "=== All Tests Complete ==="
+
+# Development workflow
+dev-setup: check-nix-deps install build nix-build
+	@echo "=== Development Setup Complete ==="
+	@echo "Ready for development with both npm and Nix"
+
+# Default Nix target shows help
+nix: help-nix
