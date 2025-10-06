@@ -36,6 +36,7 @@ dist
 # Docker folder to help skip auth refreshes
 .docker
 
+bundle
 
 # Test report files
 junit.xml
@@ -52,4 +53,3 @@ gha-creds-*.json
 
 # Log files
 patch_output.log
-logs/telemetry.log

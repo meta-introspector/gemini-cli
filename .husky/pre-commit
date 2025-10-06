@@ -1,4 +1,4 @@
-npm run pre-commit || {
+nix develop --command bash -c "node scripts/pre-commit.js" || {
   echo ''
   echo '===================================================='
   echo 'pre-commit checks failed. in case of emergency, run:'
