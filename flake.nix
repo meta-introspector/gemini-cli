@@ -74,7 +74,7 @@
       {
         packages = {
           default = gemini-cli;
-          gemini-cli = gemini-cli;
+          inherit gemini-cli;
           node2nix = node2nix-src.packages.${system}.default;
         };
         

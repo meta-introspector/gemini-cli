@@ -51,5 +51,5 @@ let
 in
 {
   default = gemini-cli;
-  test-node2nix-failure = test-node2nix-failure;
+  inherit test-node2nix-failure;
 }

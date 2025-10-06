@@ -127,7 +127,7 @@
       "prettier --write"
     ],
     "*.nix": [
-      "nix-statix fix --check"
-    ]
+      "statix check"
+    ],
   }
 }

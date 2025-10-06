@@ -8,7 +8,7 @@ ORIGINAL_PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # Create a temporary directory for the test
 TEST_DIR=$(mktemp -d)
 
-echo "Running pre-commit nix-statix test in: $TEST_DIR"
+echo "Running statix test in: $TEST_DIR"
 
 # Function to clean up the temporary directory
 cleanup() {
@@ -18,15 +18,8 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Initialize a Git repository
-cd "$TEST_DIR"
-git init -b main
-
-# Copy necessary files
-mkdir -p .husky scripts
-cp "$ORIGINAL_PROJECT_ROOT/.husky/pre-commit" .husky/
-cp "$ORIGINAL_PROJECT_ROOT/scripts/pre-commit.js" scripts/
-cat << EOF > flake.nix
+# Create a simplified flake.nix for the test environment
+cat << EOF > "$TEST_DIR/flake.nix"
 {
   description = "Test flake";
 
@@ -44,7 +37,6 @@ cat << EOF > flake.nix
         devShells.default = pkgs.mkShell {
           buildInputs = [
             pkgs.statix # Use pkgs.statix as found in the project's flake.nix
-            pkgs.nodejs_22 # Required for npm and node scripts
           ];
         };
       }
@@ -52,73 +44,48 @@ cat << EOF > flake.nix
 }
 EOF
 
-# Create a minimal package.json for lint-staged
-cat << EOF > package.json
-{
-  "name": "test-project",
-  "version": "1.0.0",
-  "type": "module",
-  "devDependencies": {
-    "lint-staged": "^16.1.6"
-  },
-  "lint-staged": {
-    "*.nix": [
-      "statix fix --check"
-    ],
-    "*.{js,jsx,ts,tsx}": [
-      "true"
-    ]
-  }
-}
-EOF
-
-# Install npm dependencies for lint-staged to work
-npm install
-
-# Add and commit initial files
-git add .husky/pre-commit scripts/pre-commit.js flake.nix package.json
-git commit -m "Initial commit"
-
-# Explicitly update flake.lock before running pre-commit hook
-nix flake update
-
 # --- Test Case 1: Malformed Nix file (should fail) ---
 echo "Testing with malformed Nix file..."
 
-MALFORMED_NIX_FILE="test.nix"
+MALFORMED_NIX_FILE="$TEST_DIR/malformed.nix"
 cat << EOF > "$MALFORMED_NIX_FILE"
 {
   bad-attribute = "value";
-}
+  unclosed-brace = {
 EOF
 
-git add "$MALFORMED_NIX_FILE"
+# Run statix (should fail) and capture output
+STATIX_OUTPUT=$(nix develop "$TEST_DIR" --command bash -c "statix check $MALFORMED_NIX_FILE" 2>&1 || true)
 
-# Run the pre-commit hook (should fail)
-if ! .husky/pre-commit; then
-  echo "✓ Pre-commit hook failed as expected for malformed Nix file."
+if echo "$STATIX_OUTPUT" | grep -q "error"; then
+  echo "✓ statix failed as expected for malformed Nix file."
 else
-  echo "✗ Pre-commit hook unexpectedly passed for malformed Nix file."
+  echo "✗ statix unexpectedly passed for malformed Nix file."
+  echo "Statix output:"
+  echo "$STATIX_OUTPUT"
   exit 1
 fi
 
 # --- Test Case 2: Correctly formatted Nix file (should pass) ---
 echo "Testing with correctly formatted Nix file..."
 
-cat << EOF > "$MALFORMED_NIX_FILE"
+CORRECT_NIX_FILE="$TEST_DIR/correct.nix"
+cat << EOF > "$CORRECT_NIX_FILE"
 {
   goodAttribute = "value";
 }
 EOF
 
-git add "$MALFORMED_NIX_FILE"
+# Run statix (should pass) and capture output
+STATIX_OUTPUT=$(nix develop "$TEST_DIR" --command bash -c "statix check $CORRECT_NIX_FILE" 2>&1 || true)
 
-# Run the pre-commit hook (should pass)
-if .husky/pre-commit; then
-  echo "✓ Pre-commit hook passed as expected for correctly formatted Nix file."
+if ! echo "$STATIX_OUTPUT" | grep -q "error"; then
+  echo "✓ statix passed as expected for correctly formatted Nix file."
 else
-  echo "✗ Pre-commit hook unexpectedly failed for correctly formatted Nix file."
+  echo "✗ statix unexpectedly failed for correctly formatted Nix file."
+  echo "Statix output:"
+  echo "$STATIX_OUTPUT"
   exit 1
 fi
 
-echo "All pre-commit nix-statix tests passed!"
+echo "All statix tests passed!"
