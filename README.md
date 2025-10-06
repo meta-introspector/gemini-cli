@@ -46,6 +46,16 @@ brew install gemini-cli
 - Node.js version 20 or higher
 - macOS, Linux, or Windows
 
+#### Install with Nix
+
+For Nix users, you can install the Gemini CLI using our Nix flake. This provides a reproducible development environment and ensures all dependencies are managed by Nix.
+
+```bash
+nix profile install github:meta-introspector/gemini-cli?ref=feature/working-gemini-cli-nix-store
+```
+
+For more detailed instructions on setting up your development environment with Nix, including how to contribute, please refer to our [Nix Onboarding Guide](./docs/tutorials/Nix_Onboarding_Guide.md).
+
 ## Release Cadence and Tags
 
 See [Releases](./docs/releases.md) for more details.
