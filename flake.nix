@@ -15,13 +15,16 @@
         # Create the gemini-cli package with the existing bundle
         gemini-cli = pkgs.stdenv.mkDerivation {
           pname = "gemini-cli";
-          version = "0.8.0-nightly.20250925.b1da8c21";
+          version = "0.30.0-nightly.20260210.a2174751d";
           
           src = ./.;
           
           buildInputs = [ pkgs.nodejs_22 ];
           
-          dontBuild = true;
+          buildPhase = ''
+            npm ci
+            npm run bundle
+          '';
           
           installPhase = ''
             mkdir -p $out/bin
